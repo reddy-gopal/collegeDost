@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -6,6 +6,7 @@ import { ThumbsUp, MessageSquare, ChevronDown, ChevronUp } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useCommentLike } from "@/hooks/useCommentLike";
 import { useCommentsList } from "@/hooks/useCommentsList";
+import { useCommentStore } from "@/hooks/useCommentStore";
 import { formatDistanceToNow } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import { Link } from "react-router-dom";
@@ -28,24 +29,29 @@ interface CommentThreadProps {
   comment: Comment;
   postId: string;
   depth: number;
+  focusedId?: string; // highlight a specific comment
 }
 
-export function CommentThread({ comment, postId, depth }: CommentThreadProps) {
+export function CommentThread({ comment, postId, depth, focusedId }: CommentThreadProps) {
   const { user } = useAuth();
   const { addComment } = useCommentsList(postId);
   const { hasLiked, likesCount, toggleLike } = useCommentLike(comment.id, user?.id);
+  const store = useCommentStore();
   
   const [showReplyBox, setShowReplyBox] = useState(false);
   const [replyContent, setReplyContent] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showReplies, setShowReplies] = useState(true);
+  const [visibleReplies, setVisibleReplies] = useState(5);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [containerWidth, setContainerWidth] = useState<number>(0);
 
   const handleReply = async () => {
     if (!replyContent.trim() || !user) return;
 
     setIsSubmitting(true);
     try {
-      await addComment(replyContent, user.id, comment.id);
+      await store.addReplyOptimistic({ postId, parentId: comment.id, userId: user.id, content: replyContent });
       setReplyContent("");
       setShowReplyBox(false);
     } finally {
@@ -54,7 +60,36 @@ export function CommentThread({ comment, postId, depth }: CommentThreadProps) {
   };
 
   const hasReplies = comment.replies && comment.replies.length > 0;
-  const indentWidth = Math.min(depth * 24, 120); // Max 120px indent
+  const BASE_INDENT = 24; // px per level
+  const HARD_CAP = 6; // absolute max levels to indent visually
+
+  // Compute maxDepth dynamically based on container width
+  const maxDepth = useMemo(() => {
+    const maxIndentPx = Math.min(160, Math.max(96, containerWidth * 0.35));
+    const responsiveDepth = Math.max(2, Math.floor(maxIndentPx / BASE_INDENT));
+    return Math.min(HARD_CAP, responsiveDepth);
+  }, [containerWidth]);
+
+  const indentWidth = Math.min(depth, maxDepth) * BASE_INDENT;
+
+  // If rendering children would exceed the inline depth, show "Continue this thread"
+  const nextDepth = depth + 1;
+  const isBeyondInlineDepth = nextDepth >= maxDepth;
+  const isPending = (comment as any).id?.toString?.().startsWith('temp-');
+  const isFocused = focusedId && focusedId === comment.id;
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const el = containerRef.current;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const width = entry.contentRect.width;
+        setContainerWidth(width);
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <motion.div
@@ -62,6 +97,7 @@ export function CommentThread({ comment, postId, depth }: CommentThreadProps) {
       animate={{ opacity: 1, y: 0 }}
       className="relative"
       style={{ marginLeft: `${indentWidth}px` }}
+      ref={containerRef}
     >
       {/* Connector Line */}
       {depth > 0 && (
@@ -73,7 +109,7 @@ export function CommentThread({ comment, postId, depth }: CommentThreadProps) {
 
       <div className="space-y-3">
         {/* Comment Header */}
-        <div className="flex items-start gap-3">
+        <div className={"flex items-start gap-3 " + (isFocused ? "ring-1 ring-primary/40 rounded-md p-2 bg-primary/5" : "") + (isPending ? " opacity-60" : "")}>
           <Avatar className="h-8 w-8 flex-shrink-0">
             <AvatarImage src={comment.profiles?.avatar_url} />
             <AvatarFallback>
@@ -197,14 +233,39 @@ export function CommentThread({ comment, postId, depth }: CommentThreadProps) {
               exit={{ opacity: 0 }}
               className="space-y-4 mt-4"
             >
-              {comment.replies!.map((reply) => (
-                <CommentThread
-                  key={reply.id}
-                  comment={reply}
-                  postId={postId}
-                  depth={depth + 1}
-                />
-              ))}
+              {/* If depth at or beyond maxDepth, stop and show continue link */}
+              {isBeyondInlineDepth ? (
+                <Link
+                  to={`/comments/${encodeURIComponent(postId)}/${encodeURIComponent(comment.id)}`}
+                  className="text-xs text-primary hover:underline"
+                >
+                  Continue this thread →
+                </Link>
+              ) : (
+                <>
+                  {store.getChildren(comment.id).slice(0, visibleReplies).map((reply) => (
+                    <CommentThread
+                      key={reply.id}
+                      comment={reply as any}
+                      postId={postId}
+                      depth={depth + 1}
+                      focusedId={focusedId}
+                    />
+                  ))}
+                  {store.getChildren(comment.id).length > visibleReplies && (
+                    <div className="pl-6">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => setVisibleReplies((v) => v + 5)}
+                      >
+                        Load more replies
+                      </Button>
+                    </div>
+                  )}
+                </>
+              )}
             </motion.div>
           )}
         </AnimatePresence>

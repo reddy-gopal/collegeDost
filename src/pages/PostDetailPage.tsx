@@ -12,6 +12,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { CommentSection } from "@/components/posts/CommentSection";
 import { formatDistanceToNow } from "date-fns";
 import { motion } from "framer-motion";
+import { usePostView } from "@/hooks/usePostView";
 
 export default function PostDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -20,6 +21,9 @@ export default function PostDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { hasLiked, likesCount, toggleLike } = useLikes(id!, user?.id);
+
+  // Track post view
+  usePostView(id);
 
   useEffect(() => {
     const fetchPost = async () => {
@@ -38,17 +42,26 @@ export default function PostDetailPage() {
 
         if (fetchError) throw fetchError;
 
-        // Fetch profile separately
         if (postData) {
+          // Fetch profile
           const { data: profileData } = await supabase
             .from("profiles")
             .select("id, username, avatar_url")
             .eq("id", postData.user_id)
             .single();
 
+          // Fetch tags through post_tags junction table
+          const { data: postTagsData } = await (supabase as any)
+            .from('post_tags')
+            .select('tag_id, tags(name)')
+            .eq('post_id', id);
+
+          const tags = postTagsData?.map((pt: any) => pt.tags?.name).filter(Boolean) || [];
+
           setPost({
             ...postData,
-            profiles: profileData
+            profiles: profileData,
+            tags: tags // Override with tags from post_tags
           });
         }
       } catch (err: any) {
@@ -176,15 +189,19 @@ export default function PostDetailPage() {
             <p className="text-base mb-4 whitespace-pre-wrap">{post.content}</p>
           )}
 
-          {/* Post Tags */}
+          {/* Post Tags - Display tags from post_tags table */}
           {post.tags && post.tags.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-4">
               {post.tags.map((tag: string, idx: number) => (
                 <span
                   key={idx}
-                  className="px-2 py-1 text-xs bg-secondary rounded-full"
+                  className="px-2 py-1 text-xs bg-secondary rounded-full hover:bg-secondary/80 cursor-pointer transition-colors"
+                  onClick={() => {
+                    // Navigate to tag filter page
+                    window.location.href = `/?tag=${tag}`;
+                  }}
                 >
-                  {tag}
+                  #{tag}
                 </span>
               ))}
             </div>

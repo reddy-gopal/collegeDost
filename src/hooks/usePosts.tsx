@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import { supabase } from "@/integrations/supabase/client";
-import { useToast } from "@/hooks/use-toast";
+import { supabase } from "../integrations/supabase/client";
+import { useToast } from "../hooks/use-toast";
 
 export interface Post {
   id: string;
@@ -37,7 +37,7 @@ export function usePosts() {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      setPosts(data || []);
+      setPosts(data as unknown as Post[] || []);
     } catch (error: any) {
       console.error('Error fetching posts:', error);
       toast({
@@ -84,7 +84,7 @@ export function usePosts() {
             .single();
 
           if (newPost) {
-            setPosts(prev => [newPost, ...prev]);
+            setPosts(prev => [newPost as unknown as Post, ...prev]);
           }
         }
       )

@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuth } from "@/hooks/useAuth";
 import { useCommentsList } from "@/hooks/useCommentsList";
+import { CommentStoreProvider, useCommentStore } from "@/hooks/useCommentStore";
+import { useEffect as ReactUseEffect } from "react";
 import { CommentThread } from "./CommentThread";
 import { Loader2 } from "lucide-react";
 
@@ -11,12 +13,21 @@ interface CommentSectionProps {
   postId: string;
 }
 
-export function CommentSection({ postId }: CommentSectionProps) {
+function InnerCommentSection({ postId }: CommentSectionProps) {
   const { user } = useAuth();
   const [newComment, setNewComment] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   
   const { comments, loading, sortBy, setSortBy, addComment, refetch } = useCommentsList(postId);
+  const store = useCommentStore();
+
+  // Seed store and subscribe once
+  ReactUseEffect(() => {
+    // Flatten tree to list to seed store
+    const flatten = (nodes: any[]): any[] => nodes.flatMap((n) => [n, ...(n.replies ? flatten(n.replies) : [])]);
+    store.setAll(flatten(comments as any[]));
+    store.subscribeGlobal(postId);
+  }, [comments, postId, store]);
 
   const handleSubmit = async () => {
     if (!newComment.trim() || !user) return;
@@ -89,16 +100,19 @@ export function CommentSection({ postId }: CommentSectionProps) {
         </div>
       ) : (
         <div className="space-y-4">
-          {comments.map((comment) => (
-            <CommentThread
-              key={comment.id}
-              comment={comment}
-              postId={postId}
-              depth={0}
-            />
+          {store.getChildren(null).map((comment) => (
+            <CommentThread key={comment.id} comment={comment as any} postId={postId} depth={0} />
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+export function CommentSection({ postId }: CommentSectionProps) {
+  return (
+    <CommentStoreProvider>
+      <InnerCommentSection postId={postId} />
+    </CommentStoreProvider>
   );
 }

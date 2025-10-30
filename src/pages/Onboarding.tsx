@@ -1,51 +1,115 @@
-import { useState, useEffect } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
-import { INDIAN_STATES, EXAM_TYPES, getExamsForUser } from "@/utils/examMappings";
+import { INDIAN_STATES } from "@/utils/examMappings";
+import { Search, X, GraduationCap, BookOpen } from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
+import examsData from '@/utils/exams.json'
+
+type BoardType = "CBSE" | "StateBoard";
 
 export default function Onboarding() {
   const [state, setState] = useState("");
-  const [selectedExams, setSelectedExams] = useState<string[]>([]);
+  const [boardType, setBoardType] = useState<BoardType | "">("");
+  const [selectedBoardExams, setSelectedBoardExams] = useState<string[]>([]);
+  const [selectedEntranceExams, setSelectedEntranceExams] = useState<string[]>([]);
+  const [boardSearchQuery, setBoardSearchQuery] = useState("");
+  const [entranceSearchQuery, setEntranceSearchQuery] = useState("");
+  const [debouncedBoardQuery, setDebouncedBoardQuery] = useState("");
+  const [debouncedEntranceQuery, setDebouncedEntranceQuery] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
   const { user } = useAuth();
 
-  // Get all available exams for the selected state (competitive + board)
-  const availableExams = state ? getExamsForUser(state, EXAM_TYPES) : [];
+  // Get board exams based on selection
+  const availableBoardExams = useMemo(() => {
+    if (!boardType) return [];
+    return examsData.board_exams[boardType] || [];
+  }, [boardType]);
 
-  const handleExamToggle = (exam: string) => {
-    setSelectedExams(prev => {
-      if (prev.includes(exam)) {
-        return prev.filter(examName => examName !== exam);
-      }
-      return [...prev, exam];
-    });
+  // Filter board exams based on search
+  const filteredBoardExams = useMemo(() => {
+    if (!debouncedBoardQuery.trim()) return availableBoardExams;
+    return availableBoardExams.filter(exam =>
+      exam.toLowerCase().includes(debouncedBoardQuery.toLowerCase())
+    );
+  }, [availableBoardExams, debouncedBoardQuery]);
+
+  // Filter entrance exams based on search
+  const filteredEntranceExams = useMemo(() => {
+    if (!debouncedEntranceQuery.trim()) return examsData.entrance_exams;
+    return examsData.entrance_exams.filter(exam =>
+      exam.toLowerCase().includes(debouncedEntranceQuery.toLowerCase())
+    );
+  }, [debouncedEntranceQuery]);
+
+  // Debounce search inputs for better UX
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedBoardQuery(boardSearchQuery), 250);
+    return () => clearTimeout(id);
+  }, [boardSearchQuery]);
+
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedEntranceQuery(entranceSearchQuery), 250);
+    return () => clearTimeout(id);
+  }, [entranceSearchQuery]);
+
+  const handleBoardExamToggle = (exam: string) => {
+    setSelectedBoardExams(prev =>
+      prev.includes(exam) ? prev.filter(e => e !== exam) : [...prev, exam]
+    );
+  };
+
+  const handleEntranceExamToggle = (exam: string) => {
+    setSelectedEntranceExams(prev =>
+      prev.includes(exam) ? prev.filter(e => e !== exam) : [...prev, exam]
+    );
+  };
+
+  const removeBoardExam = (exam: string) => {
+    setSelectedBoardExams(prev => prev.filter(e => e !== exam));
+  };
+
+  const removeEntranceExam = (exam: string) => {
+    setSelectedEntranceExams(prev => prev.filter(e => e !== exam));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!state.trim()) {
       toast({
-        title: "Error",
+        title: "State Required",
         description: "Please select your state",
         variant: "destructive",
       });
       return;
     }
 
-    if (selectedExams.length === 0) {
+    if (!boardType) {
       toast({
-        title: "Error",
-        description: "Please select at least one exam",
+        title: "Board Type Required",
+        description: "Please select CBSE or StateBoard",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (selectedBoardExams.length === 0) {
+      toast({
+        title: "Board Exam Required",
+        description: "Please select at least one board exam",
         variant: "destructive",
       });
       return;
@@ -55,23 +119,58 @@ export default function Onboarding() {
 
     setIsLoading(true);
     try {
+      const allSelectedExams = [...selectedBoardExams, ...selectedEntranceExams];
+
+      // 1) Ensure a profile row exists WITH username before updating other fields
+      const { data: existingProfile } = await (supabase as any)
+        .from('profiles')
+        .select('id')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (!existingProfile) {
+        const rawName = (user as any)?.user_metadata?.name || user.email?.split('@')[0] || '';
+        const username = String(rawName)
+          .toLowerCase()
+          .replace(/[^a-z0-9_]+/g, '_')
+          .replace(/_+/g, '_')
+          .replace(/^_+|_+$/g, '') || `user_${user.id.slice(0,8)}`; // last fallback
+        const avatarUrl = (user as any)?.user_metadata?.picture || null;
+
+        const { error: insertErr } = await (supabase as any)
+          .from('profiles')
+          .insert({
+            id: user.id,
+            username,
+            avatar_url: avatarUrl,
+            followers_count: 0,
+            following_count: 0,
+            onboarding_completed: false,
+          });
+        if (insertErr) throw insertErr;
+      }
+
+      // 2) Update onboarding fields
       const { error } = await (supabase as any)
         .from('profiles')
         .update({
           state,
-          entrance_exam: selectedExams,
-          interested_exams: selectedExams,
+          entrance_exam: selectedEntranceExams,
+          interested_exams: allSelectedExams,
           onboarding_completed: true,
+          updated_at: new Date().toISOString()
         })
         .eq('id', user.id);
 
       if (error) throw error;
 
       toast({
-        title: "Welcome!",
+        title: "Welcome! 🎉",
         description: "Your profile has been set up successfully.",
       });
-      
+
+      // Notify rest of app immediately (Header/Sidebar) in addition to realtime
+      window.dispatchEvent(new Event('profileUpdated'));
       navigate('/');
     } catch (error: any) {
       toast({
@@ -86,18 +185,19 @@ export default function Onboarding() {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-background via-background to-accent/10">
-      <Card className="w-full max-w-md">
+      <Card className="w-full max-w-3xl">
         <CardHeader className="space-y-1">
           <CardTitle className="text-2xl font-bold text-center">Complete Your Profile</CardTitle>
           <CardDescription className="text-center">
-            Tell us a bit more about yourself to get started
+            Select your state, board type, and exams you're interested in
           </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-6">
+            {/* State Selection */}
             <div className="space-y-2">
-              <Label htmlFor="state">State</Label>
-              <Select value={state} onValueChange={setState} disabled={isLoading}>
+              <Label htmlFor="state">State *</Label>
+              <Select value={state || undefined} onValueChange={setState} disabled={isLoading}>
                 <SelectTrigger id="state">
                   <SelectValue placeholder="Select your state" />
                 </SelectTrigger>
@@ -111,41 +211,177 @@ export default function Onboarding() {
               </Select>
             </div>
 
+            {/* Board Type Selection */}
             {state && (
+              <div className="space-y-2">
+                <Label htmlFor="boardType">Board Type *</Label>
+                <Select value={boardType || undefined} onValueChange={(val) => setBoardType(val as BoardType)} disabled={isLoading}>
+                  <SelectTrigger id="boardType">
+                    <SelectValue placeholder="Select board type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="CBSE">CBSE</SelectItem>
+                    <SelectItem value="StateBoard">State Board</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {/* Board Exams Section */}
+            {boardType && (
               <div className="space-y-3">
-                <Label>Available Exams</Label>
-                <p className="text-xs text-muted-foreground">Select exams you're interested in</p>
-                {availableExams.length > 0 ? (
-                  <div className="space-y-3 max-h-64 overflow-y-auto">
-                    {availableExams.map((exam) => (
-                      <div key={exam} className="flex items-center space-x-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <GraduationCap className="h-5 w-5 text-primary" />
+                    <Label className="text-base font-semibold">Board Exams *</Label>
+                  </div>
+                  <Badge variant="secondary">
+                    {selectedBoardExams.length} selected
+                  </Badge>
+                </div>
+
+                {/* Search for StateBoard only */}
+                {boardType === "StateBoard" && (
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      placeholder="Search board exams..."
+                      className="pl-9"
+                      value={boardSearchQuery}
+                      onChange={(e) => setBoardSearchQuery(e.target.value)}
+                    />
+                  </div>
+                )}
+
+                {/* Selected Board Exams */}
+                {selectedBoardExams.length > 0 && (
+                  <div className="flex flex-wrap gap-2 p-3 bg-primary/5 rounded-lg border">
+                    {selectedBoardExams.map((exam) => (
+                      <Badge key={exam} variant="default" className="gap-1">
+                        {exam}
+                        <button
+                          type="button"
+                          onClick={() => removeBoardExam(exam)}
+                          className="ml-1"
+                        >
+                          <X className="h-3 w-3 hover:text-destructive" />
+                        </button>
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+
+                {/* Board Exams List */}
+                <ScrollArea className="h-48 border rounded-md p-3">
+                  <div className="space-y-2">
+                    {filteredBoardExams.map((exam) => (
+                      <div
+                        key={exam}
+                        className="flex items-center space-x-2 p-2 rounded hover:bg-secondary/50"
+                      >
                         <Checkbox
-                          id={exam}
-                          checked={selectedExams.includes(exam)}
-                          onCheckedChange={() => handleExamToggle(exam)}
+                          id={`board-${exam}`}
+                          checked={selectedBoardExams.includes(exam)}
+                          onCheckedChange={() => handleBoardExamToggle(exam)}
                           disabled={isLoading}
                         />
-                        <Label
-                          htmlFor={exam}
-                          className="cursor-pointer text-sm font-normal"
-                        >
+                        <Label htmlFor={`board-${exam}`} className="cursor-pointer text-sm flex-1">
                           {exam}
                         </Label>
                       </div>
                     ))}
+                    {filteredBoardExams.length === 0 && (
+                      <p className="text-sm text-muted-foreground text-center py-4">
+                        No board exams found
+                      </p>
+                    )}
                   </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">No exams available for this state</p>
-                )}
+                </ScrollArea>
               </div>
             )}
 
+            {/* Entrance Exams Section - Show for both CBSE and StateBoard */}
+            {boardType && (
+              <>
+                <Separator />
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <BookOpen className="h-5 w-5 text-primary" />
+                      <Label className="text-base font-semibold">Entrance Exams (Optional)</Label>
+                    </div>
+                    <Badge variant="secondary">
+                      {selectedEntranceExams.length} selected
+                    </Badge>
+                  </div>
+
+                  {/* Search for Entrance Exams */}
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      placeholder="Search entrance exams..."
+                      className="pl-9"
+                      value={entranceSearchQuery}
+                      onChange={(e) => setEntranceSearchQuery(e.target.value)}
+                    />
+                  </div>
+
+                  {/* Selected Entrance Exams */}
+                  {selectedEntranceExams.length > 0 && (
+                    <div className="flex flex-wrap gap-2 p-3 bg-primary/5 rounded-lg border">
+                      {selectedEntranceExams.map((exam) => (
+                        <Badge key={exam} variant="default" className="gap-1">
+                          {exam}
+                          <button
+                            type="button"
+                            onClick={() => removeEntranceExam(exam)}
+                            className="ml-1"
+                          >
+                            <X className="h-3 w-3 hover:text-destructive" />
+                          </button>
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Entrance Exams List */}
+                  <ScrollArea className="h-48 border rounded-md p-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      {filteredEntranceExams.map((exam) => (
+                      <div
+                        key={exam}
+                        className="flex items-center space-x-2 p-2 rounded hover:bg-secondary/50"
+                      >
+                          <Checkbox
+                            id={`entrance-${exam}`}
+                            checked={selectedEntranceExams.includes(exam)}
+                          onCheckedChange={() => handleEntranceExamToggle(exam)}
+                            disabled={isLoading}
+                          />
+                          <Label htmlFor={`entrance-${exam}`} className="cursor-pointer text-sm flex-1">
+                            {exam}
+                          </Label>
+                        </div>
+                      ))}
+                      {filteredEntranceExams.length === 0 && (
+                        <p className="text-sm text-muted-foreground text-center py-4 col-span-2">
+                          No entrance exams found
+                        </p>
+                      )}
+                    </div>
+                  </ScrollArea>
+                </div>
+              </>
+            )}
+
+            {/* Submit Button */}
             <Button
               type="submit"
-              disabled={isLoading || !state || selectedExams.length === 0}
+              disabled={isLoading || !state || !boardType || selectedBoardExams.length === 0}
               className="w-full"
+              size="lg"
             >
-              {isLoading ? "Completing..." : "Complete Setup"}
+              {isLoading ? "Setting up..." : "Complete Setup"}
             </Button>
           </form>
         </CardContent>

@@ -1,8 +1,7 @@
-import { Home, TrendingUp, Compass, Grid, GraduationCap, Search } from "lucide-react";
+import { Home, TrendingUp, Compass, Grid, GraduationCap } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
@@ -16,19 +15,6 @@ const navItems = [
   { icon: Compass, label: "Explore", path: "/explore" },
   { icon: Grid, label: "All", path: "/all" },
 ];
-
-const tags = [
-  "#Engineering - 12 Lakhs",
-  "MBA - 5 Lakhs",
-  "CA - 4 Lakhs",
-  "MBA - 5 Lakhs",
-  "MBA - 5 Lakhs",
-  "MBA - 5 Lakhs",
-  "MBA - 5 Lakhs",
-  "MBA - 5 Lakhs",
-];
-
-
 
 export const Sidebar = () => {
   const location = useLocation();
@@ -164,28 +150,6 @@ export const Sidebar = () => {
               + Add More Entrance Exams
             </Button>
           )}
-          
-          {availableExams.length === 0 && userState && (
-            <div className="text-sm text-muted-foreground">No additional exams available for {userState}</div>
-          )}
-        </div>
-
-        <div className="space-y-3">
-          <h3 className="font-semibold text-sm">Tags</h3>
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input placeholder="Search" className="pl-9 h-9 text-sm" />
-          </div>
-          <div className="space-y-1">
-            {tags.map((tag, index) => (
-              <button
-                key={index}
-                className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-secondary/50 transition-colors"
-              >
-                {tag}
-              </button>
-            ))}
-          </div>
         </div>
 
         <div className="bg-secondary/50 rounded-lg p-4 space-y-3">

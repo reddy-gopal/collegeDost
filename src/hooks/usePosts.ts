@@ -47,29 +47,44 @@ export const usePosts = () => {
 
         console.log('User IDs to fetch:', userIds); // Debug log
 
-        const { data: profilesData, error: profilesError } = await supabase
+        const { data: profilesData } = await supabase
           .from('profiles')
           .select('id, username, avatar_url')
           .in('id', userIds);
 
-        if (profilesError) {
-          console.error('Error fetching profiles:', profilesError);
+        if (profilesData) {
+          console.log('Profiles data:', profilesData); // Debug log
         }
 
-        console.log('Profiles data:', profilesData); // Debug log
+        // Fetch tags for all posts through post_tags junction table
+        const postIds = postsData.map(p => p.id);
+        const { data: postTagsData } = await (supabase as any)
+          .from('post_tags')
+          .select('post_id, tag_id, tags(name)')
+          .in('post_id', postIds);
 
-        // Merge posts with profiles - ensure proper matching
-        const postsWithProfiles = postsData.map(post => {
-          const profile = profilesData?.find(p => p.id === post.user_id);
-          console.log(`Post ${post.id} - user_id: ${post.user_id}, matched profile:`, profile); // Debug log
-          return {
-            ...post,
-            profiles: profile || null
-          };
-        });
+        // Build a map of post_id -> tag names
+        const postTagsMap: Record<string, string[]> = {};
+        if (postTagsData) {
+          postTagsData.forEach((pt: any) => {
+            if (!postTagsMap[pt.post_id]) {
+              postTagsMap[pt.post_id] = [];
+            }
+            if (pt.tags?.name) {
+              postTagsMap[pt.post_id].push(pt.tags.name);
+            }
+          });
+        }
 
-        console.log('Posts with profiles:', postsWithProfiles); // Debug log
-        setPosts(postsWithProfiles as Post[]);
+        // Merge posts with profiles and tags
+        const postsWithProfilesAndTags = postsData.map(post => ({
+          ...post,
+          profiles: profilesData?.find(profile => profile.id === post.user_id) || null,
+          tags: postTagsMap[post.id] || [] // Tags from post_tags table
+        }));
+
+        console.log('Posts with profiles and tags:', postsWithProfilesAndTags); // Debug log
+        setPosts(postsWithProfilesAndTags as Post[]);
       } else {
         setPosts([]);
       }
@@ -84,8 +99,8 @@ export const usePosts = () => {
   useEffect(() => {
     fetchPosts();
 
-    // Subscribe to real-time changes
-    const channel = supabase
+    // Subscribe to real-time changes on posts (covers trigger-based likes_count updates)
+    const postsChannel = (supabase as any)
       .channel('posts-changes')
       .on(
         'postgres_changes',
@@ -100,8 +115,25 @@ export const usePosts = () => {
       )
       .subscribe();
 
+    // Also subscribe to likes table to catch UI likes changes immediately
+    const likesChannel = (supabase as any)
+      .channel('likes-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'likes'
+        },
+        () => {
+          fetchPosts();
+        }
+      )
+      .subscribe();
+
     return () => {
-      supabase.removeChannel(channel);
+      (supabase as any).removeChannel(postsChannel);
+      (supabase as any).removeChannel(likesChannel);
     };
   }, []);
 

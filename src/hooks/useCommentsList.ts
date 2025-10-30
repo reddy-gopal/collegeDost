@@ -141,8 +141,58 @@ export function useCommentsList(postId: string) {
           table: "comments",
           filter: `post_id=eq.${postId}`,
         },
-        () => {
-          fetchComments();
+        (payload: any) => {
+          // Apply incremental updates for snappier UX
+          try {
+            if (payload.eventType === 'INSERT') {
+              const inserted = payload.new as any;
+              setComments((prev) => {
+                const newNode: Comment = {
+                  id: inserted.id,
+                  content: inserted.content,
+                  user_id: inserted.user_id,
+                  post_id: inserted.post_id,
+                  parent_id: inserted.parent_id,
+                  created_at: inserted.created_at,
+                  likes_count: inserted.likes_count || 0,
+                  profiles: undefined,
+                  replies: [],
+                } as any;
+
+                const addToTree = (nodes: Comment[]): Comment[] => {
+                  if (!inserted.parent_id) {
+                    return [newNode, ...nodes];
+                  }
+                  return nodes.map((n) => {
+                    if (n.id === inserted.parent_id) {
+                      const existing = n.replies || [];
+                      return { ...n, replies: [newNode, ...existing] } as Comment;
+                    }
+                    const childReplies = n.replies && n.replies.length > 0 ? addToTree(n.replies) : n.replies;
+                    return { ...n, replies: childReplies } as Comment;
+                  });
+                };
+
+                return addToTree(prev);
+              });
+            } else if (payload.eventType === 'DELETE') {
+              const deletedId = (payload.old as any).id;
+              const removeFromTree = (nodes: Comment[]): Comment[] => {
+                return nodes
+                  .filter((n) => n.id !== deletedId)
+                  .map((n) => ({
+                    ...n,
+                    replies: n.replies ? removeFromTree(n.replies) : n.replies,
+                  } as Comment));
+              };
+              setComments((prev) => removeFromTree(prev));
+            } else {
+              // For updates or others, refetch to ensure profiles/totals stay in sync
+              fetchComments();
+            }
+          } catch {
+            fetchComments();
+          }
         }
       )
       .subscribe();
@@ -156,6 +206,37 @@ export function useCommentsList(postId: string) {
     if (!content.trim()) return;
 
     try {
+      // Optimistic insert
+      const tempId = `temp-${Date.now()}`;
+      const optimistic: Comment = {
+        id: tempId,
+        content: content.trim(),
+        user_id: userId,
+        post_id: postId,
+        parent_id: parentId || null,
+        created_at: new Date().toISOString(),
+        likes_count: 0,
+        profiles: undefined,
+        replies: [],
+      } as any;
+
+      setComments((prev) => {
+        const insertNode = (nodes: Comment[]): Comment[] => {
+          if (!parentId) {
+            return [optimistic, ...nodes];
+          }
+          return nodes.map((n) => {
+            if (n.id === parentId) {
+              const existing = n.replies || [];
+              return { ...n, replies: [optimistic, ...existing] } as Comment;
+            }
+            const childReplies = n.replies && n.replies.length > 0 ? insertNode(n.replies) : n.replies;
+            return { ...n, replies: childReplies } as Comment;
+          });
+        };
+        return insertNode(prev);
+      });
+
       const { error } = await supabase.from("comments").insert({
         post_id: postId,
         user_id: userId,
@@ -169,7 +250,20 @@ export function useCommentsList(postId: string) {
         title: "Success",
         description: parentId ? "Reply added" : "Comment added",
       });
+      // Refetch to reconcile temp node with real data/profiles
+      fetchComments();
     } catch (error: any) {
+      // Rollback optimistic insert
+      setComments((prev) => {
+        const removeTemp = (nodes: Comment[]): Comment[] =>
+          nodes
+            .filter((n) => !n.id.startsWith('temp-'))
+            .map((n) => ({
+              ...n,
+              replies: n.replies ? removeTemp(n.replies) : n.replies,
+            } as Comment));
+        return removeTemp(prev);
+      });
       toast({
         title: "Error",
         description: error.message || "Failed to add comment",

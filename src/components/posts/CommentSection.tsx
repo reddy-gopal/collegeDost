@@ -114,6 +114,7 @@ export function CommentSection({ postId }: CommentSectionProps) {
               comment={comment}
               postId={postId}
               depth={0}
+              showContinueButton={true} // Enable continue button for main post view
             />
           ))}
         </div>

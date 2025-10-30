@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { MainLayout } from "@/components/layout/MainLayout";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
@@ -15,6 +16,14 @@ import { TagSelector } from "@/components/posts/TagSelector";
 import { ImageUpload } from "@/components/posts/ImageUpload";
 import { ProgressBar } from "@/components/posts/ProgressBar";
 import { X } from "lucide-react";
+import examsData from "@/utils/exams.json";
+import { Badge } from "@/components/ui/badge";
+
+interface Topic {
+  id: string;
+  name: string;
+  description?: string;
+}
 
 const AVAILABLE_TAGS = [
   "Engineering", "Medical", "Commerce", "Science", "Law", 
@@ -27,16 +36,89 @@ export default function CreatePostPage() {
   const { toast } = useToast();
   const { user } = useAuth();
   
-  const [category, setCategory] = useState<"Entrance Exam" | "Board Exam">("Entrance Exam");
   const [postType, setPostType] = useState<"Text" | "Image" | "Video" | "Link" | "Poll">("Text");
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [selectedTopicId, setSelectedTopicId] = useState<string>("");
+  const [topics, setTopics] = useState<Topic[]>([]);
+  const [loadingTopics, setLoadingTopics] = useState(true);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
+  const [selectedExamType, setSelectedExamType] = useState<string>("");
+  const isValidSelection = !!selectedExamType; // Only exam type is required now
+
+  // Organize all exams with categories
+  const allExamsWithCategories = useMemo(() => {
+    const exams: Array<{ value: string; label: string; category: string }> = [];
+    
+    // Add CBSE exams
+    (examsData.board_exams?.CBSE || []).forEach(exam => {
+      exams.push({ value: exam, label: exam, category: 'CBSE Board' });
+    });
+    
+    // Add State Board exams
+    (examsData.board_exams?.StateBoard || []).forEach(exam => {
+      exams.push({ value: exam, label: exam, category: 'State Board' });
+    });
+    
+    // Add Entrance exams
+    (examsData.entrance_exams || []).forEach(exam => {
+      exams.push({ value: exam, label: exam, category: 'Entrance Exam' });
+    });
+    
+    return exams;
+  }, []);
+
+  // Group exams by category for display
+  const groupedExams = useMemo(() => {
+    const groups: Record<string, typeof allExamsWithCategories> = {};
+    allExamsWithCategories.forEach(exam => {
+      if (!groups[exam.category]) {
+        groups[exam.category] = [];
+      }
+      groups[exam.category].push(exam);
+    });
+    return groups;
+  }, [allExamsWithCategories]);
+
+  // Extract hashtags from text content
+  const extractHashtags = (text: string): string[] => {
+    const hashtagRegex = /#\w+/g;
+    const matches = text.match(hashtagRegex);
+    if (!matches) return [];
+    // Remove the # symbol and convert to lowercase, remove duplicates
+    return [...new Set(matches.map(tag => tag.substring(1).toLowerCase()))];
+  };
+
+  // Fetch topics from database
+  useEffect(() => {
+    const fetchTopics = async () => {
+      try {
+        const { data, error } = await (supabase as any)
+          .from('topics')
+          .select('id, name, description')
+          .order('name', { ascending: true });
+
+        if (error) throw error;
+        setTopics((data || []) as Topic[]);
+      } catch (error: any) {
+        console.error("Error fetching topics:", error);
+        toast({
+          title: "Error",
+          description: "Failed to load topics. Please refresh the page.",
+          variant: "destructive",
+        });
+      } finally {
+        setLoadingTopics(false);
+      }
+    };
+
+    fetchTopics();
+  }, [toast]);
 
   // Load draft from localStorage
   useEffect(() => {
@@ -46,25 +128,37 @@ export default function CreatePostPage() {
         const parsed = JSON.parse(draft);
         setTitle(parsed.title || "");
         setContent(parsed.content || "");
-        setCategory(parsed.category || "Entrance Exam");
         setSelectedTags(parsed.tags || []);
         setPostType(parsed.postType || "Text");
         setLinkUrl(parsed.linkUrl || "");
+        setSelectedTopicId(parsed.topicId || "");
+        setSelectedExamType(parsed.examType || "");
       } catch (error) {
         console.error("Error loading draft:", error);
       }
     }
   }, []);
 
+  // Extract hashtags from content when it changes (only update if new tags are found)
+  useEffect(() => {
+    const extractedTags = extractHashtags(content + " " + title);
+    // Only update if there are new extracted tags that aren't already in selectedTags
+    const newTags = extractedTags.filter(tag => !selectedTags.includes(tag));
+    if (newTags.length > 0) {
+      setSelectedTags(prev => [...new Set([...prev, ...extractedTags])]);
+    }
+  }, [content, title]); // Removed selectedTags from dependencies to avoid infinite loop
+
   // Save draft to localStorage
   const saveDraft = () => {
     const draft = {
       title,
       content,
-      category,
       tags: selectedTags,
       postType,
       linkUrl,
+      topicId: selectedTopicId,
+      examType: selectedExamType,
     };
     localStorage.setItem("post_draft", JSON.stringify(draft));
     toast({
@@ -93,19 +187,31 @@ export default function CreatePostPage() {
 
     try {
       const fileExt = imageFile.name.split('.').pop();
-      const fileName = `${user.id}-${Date.now()}.${fileExt}`;
-      const filePath = `${fileName}`;
+      const fileName = `${Date.now()}.${fileExt}`;
+      const filePath = `${user.id}/${fileName}`;
 
-      const { error: uploadError } = await supabase.storage
+      // Ensure correct content type and allow overwrite to avoid duplicate errors
+      const { data: uploadData, error: uploadError } = await supabase.storage
         .from('post-images')
-        .upload(filePath, imageFile);
+        .upload(filePath, imageFile, {
+          contentType: imageFile.type || 'application/octet-stream',
+          upsert: true,
+          cacheControl: '3600',
+        });
 
-      if (uploadError) throw uploadError;
+      if (uploadError) {
+        console.error('Supabase upload error:', uploadError);
+        return null;
+      }
 
-      const { data: { publicUrl } } = supabase.storage
+      const { data: publicData } = supabase.storage
         .from('post-images')
-        .getPublicUrl(filePath);
+        .getPublicUrl(uploadData?.path || filePath);
 
+      const publicUrl = publicData?.publicUrl || null;
+      if (!publicUrl) {
+        console.error('Failed to get public URL for uploaded image.');
+      }
       return publicUrl;
     } catch (error) {
       console.error("Error uploading image:", error);
@@ -142,6 +248,16 @@ export default function CreatePostPage() {
       return;
     }
 
+    // NEW: Validate that exam type is selected (required)
+    if (!selectedExamType) {
+      toast({
+        title: "Exam Type Required",
+        description: "Please select an Exam Type",
+        variant: "destructive",
+      });
+      return;
+    }
+
     if (postType === "Link" && !linkUrl.trim()) {
       toast({
         title: "URL required",
@@ -165,41 +281,63 @@ export default function CreatePostPage() {
         }
       }
 
-      // Prepare post data - ensure user_id is set correctly
-      const postData = {
+      // Determine category from selected exam type
+      let category: "Entrance Exam" | "Board Exam" = "Entrance Exam";
+      if (selectedExamType) {
+        const examInfo = allExamsWithCategories.find(e => e.value === selectedExamType);
+        if (examInfo?.category === 'CBSE Board' || examInfo?.category === 'State Board') {
+          category = "Board Exam";
+        }
+      }
+
+      // Extract hashtags from content and title
+      const extractedHashtags = extractHashtags(content + " " + title);
+      
+      // Prepare post data
+      const postData: any = {
         user_id: user.id,
         title: title.trim(),
         content: content.trim() || null,
         image_url: imageUrl,
         link_url: postType === "Link" ? linkUrl.trim() : null,
-        tags: selectedTags,
+        topic_id: selectedTopicId || null, // Now optional
         category,
         post_type: postType,
+        exam_type: selectedExamType, // Required
         likes_count: 0,
         comments_count: 0,
       };
 
-      // Insert post into database - don't try to select profiles in the same query
-      const { data, error } = await supabase
+      // Insert post into database with type casting
+      const { data: newPost, error: postError } = await (supabase as any)
         .from('posts')
         .insert([postData])
         .select()
         .single();
 
-      if (error) {
-        console.error("Supabase error:", error);
-        throw error;
+      if (postError) {
+        console.error("Post insert error:", postError);
+        throw postError;
+      }
+
+      // Process tags if any exist
+      if (extractedHashtags.length > 0 && newPost) {
+        await processPostTags(newPost.id, extractedHashtags);
       }
 
       // Clear draft
       localStorage.removeItem("post_draft");
+
+      // Dispatch custom event for tag updates
+      window.dispatchEvent(new CustomEvent('tagsUpdated', { 
+        detail: { tags: extractedHashtags } 
+      }));
 
       toast({
         title: "Post created successfully!",
         description: "Your post has been published",
       });
 
-      // Redirect to home
       setTimeout(() => {
         navigate(`/`);
       }, 1000);
@@ -213,6 +351,38 @@ export default function CreatePostPage() {
     } finally {
       setIsSubmitting(false);
       setShowProgress(false);
+    }
+  };
+
+  // Process tags: upsert into tags table and link in post_tags
+  const processPostTags = async (postId: string, hashtags: string[]) => {
+    try {
+      for (const tagName of hashtags) {
+        // Upsert tag (insert or get existing)
+        const { data: tag, error: tagError } = await (supabase as any)
+          .from('tags')
+          .upsert({ name: tagName.toLowerCase() }, { onConflict: 'name' })
+          .select()
+          .single();
+
+        if (tagError) {
+          console.error('Error upserting tag:', tagError);
+          continue;
+        }
+
+        // Link tag to post
+        if (tag) {
+          const { error: linkError } = await (supabase as any)
+            .from('post_tags')
+            .insert({ post_id: postId, tag_id: tag.id });
+
+          if (linkError && linkError.code !== '23505') { // Ignore duplicate errors
+            console.error('Error linking tag to post:', linkError);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error processing tags:', error);
     }
   };
 
@@ -233,18 +403,90 @@ export default function CreatePostPage() {
         </div>
 
         <Card className="p-6 space-y-6">
-          {/* Category Selection */}
+          {/* Exam Type Selection - REQUIRED */}
           <div>
-            <label className="text-sm font-medium mb-2 block">Select Type</label>
-            <Select value={category} onValueChange={(val) => setCategory(val as any)}>
-              <SelectTrigger>
-                <SelectValue />
+            <Label className="text-sm font-medium mb-2 block">
+              Select Exam Type <span className="text-destructive">*</span>
+            </Label>
+            <Select value={selectedExamType} onValueChange={setSelectedExamType}>
+              <SelectTrigger className={!selectedExamType ? "border-destructive" : ""}>
+                <SelectValue placeholder="Choose an exam type..." />
               </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Entrance Exam">Entrance Exam</SelectItem>
-                <SelectItem value="Board Exam">Board Exam</SelectItem>
+              <SelectContent className="max-h-[300px]">
+                {Object.entries(groupedExams).map(([categoryName, exams]) => (
+                  <div key={categoryName}>
+                    <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground bg-muted/50 sticky top-0 z-10">
+                      {categoryName}
+                    </div>
+                    {exams.map((exam) => (
+                      <SelectItem key={exam.value} value={exam.value}>
+                        {exam.label}
+                      </SelectItem>
+                    ))}
+                  </div>
+                ))}
               </SelectContent>
             </Select>
+            {selectedExamType && (
+              <div className="mt-2 flex items-center gap-2">
+                <Badge variant="secondary" className="text-xs">
+                  {selectedExamType}
+                </Badge>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs"
+                  onClick={() => setSelectedExamType("")}
+                >
+                  <X className="h-3 w-3 mr-1" />
+                  Clear
+                </Button>
+              </div>
+            )}
+            {!selectedExamType && (
+              <p className="text-xs text-destructive mt-1">
+                Exam Type is required
+              </p>
+            )}
+          </div>
+
+          {/* Topic Selection - OPTIONAL */}
+          <div>
+            <Label className="text-sm font-medium mb-2 block">
+              Select Category Topic <span className="text-muted-foreground text-xs">(Optional)</span>
+            </Label>
+            <Select 
+              value={selectedTopicId} 
+              onValueChange={setSelectedTopicId}
+              disabled={loadingTopics}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder={loadingTopics ? "Loading topics..." : "Select a topic (optional)"} />
+              </SelectTrigger>
+              <SelectContent>
+                {topics.map((topic) => (
+                  <SelectItem key={topic.id} value={topic.id}>
+                    {topic.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {selectedTopicId && (
+              <div className="mt-2 flex items-center gap-2">
+                <Badge variant="secondary" className="text-xs">
+                  {topics.find(t => t.id === selectedTopicId)?.name}
+                </Badge>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs"
+                  onClick={() => setSelectedTopicId("")}
+                >
+                  <X className="h-3 w-3 mr-1" />
+                  Clear
+                </Button>
+              </div>
+            )}
           </div>
 
           {/* Post Type Tabs */}
@@ -273,11 +515,10 @@ export default function CreatePostPage() {
 
               <TextEditor value={content} onChange={setContent} />
 
-              <TagSelector
-                availableTags={AVAILABLE_TAGS}
-                selectedTags={selectedTags}
-                onTagsChange={setSelectedTags}
-              />
+              <div className="text-xs text-muted-foreground">
+                <p>Hashtags will be automatically extracted from your post content.</p>
+                <p className="mt-1">Example: Write #engineering or #mba in your post to create tags.</p>
+              </div>
             </TabsContent>
 
             {/* Image/Video Post */}
@@ -307,11 +548,10 @@ export default function CreatePostPage() {
                 rows={4}
               />
 
-              <TagSelector
-                availableTags={AVAILABLE_TAGS}
-                selectedTags={selectedTags}
-                onTagsChange={setSelectedTags}
-              />
+              <div className="text-xs text-muted-foreground">
+                <p>Hashtags will be automatically extracted from your post content.</p>
+                <p className="mt-1">Example: Write #engineering or #mba in your post to create tags.</p>
+              </div>
             </TabsContent>
 
             {/* Link Post */}
@@ -343,11 +583,10 @@ export default function CreatePostPage() {
                 rows={4}
               />
 
-              <TagSelector
-                availableTags={AVAILABLE_TAGS}
-                selectedTags={selectedTags}
-                onTagsChange={setSelectedTags}
-              />
+              <div className="text-xs text-muted-foreground">
+                <p>Hashtags will be automatically extracted from your post content.</p>
+                <p className="mt-1">Example: Write #engineering or #mba in your post to create tags.</p>
+              </div>
             </TabsContent>
 
             {/* Poll Post */}
@@ -369,7 +608,7 @@ export default function CreatePostPage() {
             </Button>
             <Button
               onClick={handleSubmit}
-              disabled={isSubmitting || !title.trim()}
+              disabled={isSubmitting || !title.trim() || !isValidSelection}
             >
               {isSubmitting ? "Posting..." : "Post"}
             </Button>
