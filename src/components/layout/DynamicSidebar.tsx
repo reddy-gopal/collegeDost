@@ -1,9 +1,9 @@
-import { Home, TrendingUp, Compass, Grid, GraduationCap, Search, Plus, BookOpen, CheckSquare, Square, X } from "lucide-react";
+import { Home, TrendingUp, Compass, Grid, GraduationCap, Search, Plus, BookOpen, CheckSquare, Square, X, Menu } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { getExamsForUser, EXAM_TYPES } from "@/utils/examMappings";
@@ -11,6 +11,14 @@ import { AddExamsModal } from "@/components/profile/AddExamsModal";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Loader2 } from "lucide-react";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 
 const navItems = [
   { icon: Home, label: "Home Page", path: "/" },
@@ -42,18 +50,39 @@ export const DynamicSidebar = () => {
   const [loadingTags, setLoadingTags] = useState(true);
   const [selectedTags, setSelectedTags] = useState<string[]>([]); // Changed from single to array
   const [tagFilterMode, setTagFilterMode] = useState<'any' | 'all'>('any'); // Filter mode
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (user) {
-      fetchProfile();
-    } else {
+  // Memoize fetchProfile to prevent recreating it
+  const fetchProfile = useCallback(async () => {
+    if (!user) return;
+
+    setLoading(true);
+    try {
+      const { data, error } = await (supabase as any)
+        .from('profiles')
+        .select('username, state, entrance_exam, interested_exams')
+        .eq('id', user.id)
+        .single();
+
+      if (error) throw error;
+      
+      setProfile(data);
+      setInterestedExams(data.interested_exams || []);
+
+      // Calculate available exams based on state
+      if (data.state) {
+        const allPossibleExams = getExamsForUser(data.state, EXAM_TYPES);
+        setAvailableExams(allPossibleExams);
+      }
+    } catch (error: any) {
+      console.error("Error fetching profile:", error);
+    } finally {
       setLoading(false);
     }
-    fetchTags(); // Only fetch tags, not topics
   }, [user]);
 
-  // Fetch tags with popularity
-  const fetchTags = async () => {
+  // Memoize fetchTags to prevent recreating it
+  const fetchTags = useCallback(async () => {
     setLoadingTags(true);
     try {
       const { data: rpcData, error: rpcError } = await (supabase as any)
@@ -85,36 +114,68 @@ export const DynamicSidebar = () => {
     } finally {
       setLoadingTags(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (user) {
+      fetchProfile();
+    } else {
+      setLoading(false);
+    }
+    fetchTags(); // Only fetch tags, not topics
+  }, [user, fetchProfile, fetchTags]);
+
 
   // Set up real-time subscription for profile updates
   useEffect(() => {
-    if (!user) return;
+    if (!user?.id) return;
 
     const channel = supabase
       .channel(`profile-updates-${user.id}`)
       .on(
         'postgres_changes',
         {
-          event: '*',
+          event: 'UPDATE',
           schema: 'public',
           table: 'profiles',
           filter: `id=eq.${user.id}`
         },
         (payload) => {
           const updatedData = payload.new as any;
-
-          // Immediate state updates
-          setProfile(prev => prev ? { ...prev, ...updatedData } : updatedData);
+          
+          // Only update if data actually changed to prevent unnecessary re-renders
+          setProfile(prev => {
+            if (!prev) return updatedData;
+            // Deep compare to avoid unnecessary updates
+            const hasChanges = 
+              prev.username !== updatedData.username ||
+              prev.state !== updatedData.state ||
+              JSON.stringify(prev.interested_exams) !== JSON.stringify(updatedData.interested_exams) ||
+              JSON.stringify(prev.entrance_exam) !== JSON.stringify(updatedData.entrance_exam);
+            
+            if (!hasChanges) return prev;
+            return { ...prev, ...updatedData };
+          });
 
           if (updatedData.interested_exams) {
-            setInterestedExams(updatedData.interested_exams);
+            setInterestedExams(prev => {
+              // Only update if different
+              if (JSON.stringify(prev) === JSON.stringify(updatedData.interested_exams)) {
+                return prev;
+              }
+              return updatedData.interested_exams;
+            });
           }
           
           if (updatedData.state) {
-            // Recalculate available exams
-            const allPossibleExams = getExamsForUser(updatedData.state, EXAM_TYPES);
-            setAvailableExams(allPossibleExams);
+            setAvailableExams(prev => {
+              const allPossibleExams = getExamsForUser(updatedData.state, EXAM_TYPES);
+              // Only update if different
+              if (JSON.stringify(prev) === JSON.stringify(allPossibleExams)) {
+                return prev;
+              }
+              return allPossibleExams;
+            });
           }
         }
       )
@@ -135,41 +196,13 @@ export const DynamicSidebar = () => {
     return () => {
       window.removeEventListener('examsUpdated', handleExamsRefresh);
     };
-  }, []);
+  }, [fetchProfile]);
 
-  const fetchProfile = async () => {
-    if (!user) return;
-
-    setLoading(true);
-    try {
-      const { data, error } = await (supabase as any)
-        .from('profiles')
-        .select('username, state, entrance_exam, interested_exams')
-        .eq('id', user.id)
-        .single();
-
-      if (error) throw error;
-      
-      setProfile(data);
-      setInterestedExams(data.interested_exams || []);
-
-      // Calculate available exams based on state
-      if (data.state) {
-        const allPossibleExams = getExamsForUser(data.state, EXAM_TYPES);
-        setAvailableExams(allPossibleExams);
-      }
-    } catch (error: any) {
-      console.error("Error fetching profile:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleExamsUpdated = () => {
+  const handleExamsUpdated = useCallback(() => {
     fetchProfile();
     // Dispatch event for other components
     window.dispatchEvent(new Event('examsUpdated'));
-  };
+  }, [fetchProfile]);
 
   // Separate board and competitive exams
   const { boardExams, competitiveExams } = useMemo(() => {
@@ -198,8 +231,18 @@ export const DynamicSidebar = () => {
   // Show top 6 by default, or all if showAllTags is true
   const displayedTags = showAllTags ? filteredTags : filteredTags.slice(0, 6);
 
-  // Handle tag click - support multi-select
-  const handleTagClick = (tagName: string, event?: React.MouseEvent) => {
+  // Handle tag click - support multi-select - memoized
+  const handleTagClick = useCallback((tagName: string, event?: React.MouseEvent) => {
+    // Don't process clicks if search input is focused
+    if (searchInputRef.current === document.activeElement) {
+      return;
+    }
+    
+    // Don't process clicks if user is selecting text (searching)
+    if (event && window.getSelection()?.toString().length > 0) {
+      return;
+    }
+    
     const isMultiSelect = event?.ctrlKey || event?.metaKey || event?.shiftKey;
     
     setSelectedTags(prev => {
@@ -232,10 +275,10 @@ export const DynamicSidebar = () => {
       
       return newSelected;
     });
-  };
+  }, [tagFilterMode]);
 
-  // Remove individual tag from selection
-  const removeTag = (tagName: string) => {
+  // Remove individual tag from selection - memoized
+  const removeTag = useCallback((tagName: string) => {
     setSelectedTags(prev => {
       const newSelected = prev.filter(t => t !== tagName);
       window.dispatchEvent(new CustomEvent('tagsSelected', { 
@@ -243,40 +286,56 @@ export const DynamicSidebar = () => {
       }));
       return newSelected;
     });
-  };
+  }, [tagFilterMode]);
 
-  // Clear all selected tags - ADD THIS FUNCTION
-  const clearSelectedTags = () => {
+  // Clear all selected tags - memoized
+  const clearSelectedTags = useCallback(() => {
     setSelectedTags([]);
     window.dispatchEvent(new CustomEvent('tagsSelected', { 
       detail: { tags: [], mode: tagFilterMode } 
     }));
-  };
+  }, [tagFilterMode]);
 
-  if (loading) {
-    return (
-      <aside className="hidden lg:block w-72 border-r bg-card h-[calc(100vh-4rem)] sticky top-16 overflow-y-auto">
-        <div className="p-4 space-y-6">
-          <Skeleton className="h-20 w-full" />
-          <Skeleton className="h-32 w-full" />
-          <Skeleton className="h-40 w-full" />
+  // Mobile bottom navigation component - memoized to prevent re-renders
+  const MobileBottomNav = useMemo(() => () => (
+    <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-t border-border shadow-lg">
+      <div className="grid grid-cols-4 h-16">
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          const isActive = location.pathname === item.path;
+          return (
+            <Link
+              key={item.path}
+              to={item.path}
+              className={cn(
+                "flex flex-col items-center justify-center gap-1 px-2 py-2 transition-colors",
+                isActive
+                  ? "text-primary bg-primary/10"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Icon className="h-5 w-5" />
+              <span className="text-xs font-medium">{item.label.split(' ')[0]}</span>
+            </Link>
+          );
+        })}
+      </div>
+    </nav>
+  ), [location.pathname]);
+
+  // Shared sidebar content - memoized to prevent re-renders
+  const SidebarContent = useMemo(() => ({ isMobile = false }: { isMobile?: boolean }) => (
+    <div className={cn("space-y-6", isMobile && "p-4")}>
+      {profile && profile.username && (
+        <div className="bg-gradient-to-r from-primary/10 to-accent/10 rounded-lg p-4 border">
+          <p className="text-sm font-medium">Hi, {profile.username}! 👋</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Here are updates for your selected exams
+          </p>
         </div>
-      </aside>
-    );
-  }
+      )}
 
-  return (
-    <aside className="hidden lg:block w-72 border-r bg-card h-[calc(100vh-4rem)] sticky top-16 overflow-y-auto">
-      <div className="p-4 space-y-6">
-        {profile && profile.username && (
-          <div className="bg-gradient-to-r from-primary/10 to-accent/10 rounded-lg p-4 border">
-            <p className="text-sm font-medium">Hi, {profile.username}! 👋</p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Here are updates for your selected exams
-            </p>
-          </div>
-        )}
-
+      {!isMobile && (
         <nav className="space-y-1">
           {navItems.map((item) => {
             const Icon = item.icon;
@@ -298,236 +357,293 @@ export const DynamicSidebar = () => {
             );
           })}
         </nav>
+      )}
 
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-sm">Interested Exams</h3>
-            {interestedExams.length > 0 && (
-              <span className="text-xs text-muted-foreground bg-secondary px-2 py-1 rounded-full">
-                {interestedExams.length}
-              </span>
-            )}
-          </div>
-          
-          {interestedExams.length === 0 ? (
-            <div className="text-sm text-muted-foreground py-4 text-center">
-              No exams selected yet. Add exams to see updates here.
-            </div>
-          ) : (
-            <>
-              {boardExams.length > 0 && (
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                    Board Exams
-                  </p>
-                  {boardExams.map((exam) => (
-                    <div
-                      key={exam}
-                      className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-secondary/30 border pointer-events-none"
-                    >
-                      <GraduationCap className="h-4 w-4 text-muted-foreground" />
-                      <span className="flex-1 truncate">{exam}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {competitiveExams.length > 0 && (
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                    Competitive Exams
-                  </p>
-                  {competitiveExams.map((exam) => (
-                    <div
-                      key={exam}
-                      className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-secondary/30 border pointer-events-none"
-                    >
-                      <BookOpen className="h-4 w-4 text-muted-foreground" />
-                      <span className="flex-1 truncate">{exam}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {profile?.state && unselectedExams.length > 0 && (
-                <Button 
-                  variant="link" 
-                  className="px-0 text-sm text-primary w-full justify-start hover:underline"
-                  onClick={() => setIsAddExamsOpen(true)}
-                >
-                  <Plus className="h-4 w-4 mr-1" />
-                  Add More Entrance Exams ({unselectedExams.length})
-                </Button>
-              )}
-
-              {profile?.state && unselectedExams.length === 0 && (
-                <div className="text-xs text-muted-foreground py-2 px-3 bg-green-50 dark:bg-green-950 rounded-lg border border-green-200 dark:border-green-800">
-                  ✓ All available exams for {profile.state} are selected
-                </div>
-              )}
-
-              {!profile?.state && (
-                <div className="text-xs text-muted-foreground py-2">
-                  Update your state in profile to see available exams
-                </div>
-              )}
-            </>
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-sm">Interested Exams</h3>
+          {interestedExams.length > 0 && (
+            <span className="text-xs text-muted-foreground bg-secondary px-2 py-1 rounded-full">
+              {interestedExams.length}
+            </span>
           )}
         </div>
-
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-sm">Trending Tags</h3>
-            <div className="flex items-center gap-1">
-              {selectedTags.length > 0 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={clearSelectedTags}
-                  className="h-auto p-0 text-xs text-destructive hover:underline"
-                >
-                  Clear ({selectedTags.length})
-                </Button>
-              )}
-              {tags.length > 6 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowAllTags(!showAllTags)}
-                  className="h-auto p-0 text-xs text-primary hover:underline ml-2"
-                >
-                  {showAllTags ? 'Show Less' : 'View All'}
-                </Button>
-              )}
-            </div>
+        
+        {interestedExams.length === 0 ? (
+          <div className="text-sm text-muted-foreground py-4 text-center">
+            No exams selected yet. Add exams to see updates here.
           </div>
-
-          {/* Filter Mode Toggle */}
-          {selectedTags.length > 1 && (
-            <div className="flex items-center gap-2 p-2 bg-secondary/50 rounded-lg border">
-              <span className="text-xs text-muted-foreground">Match:</span>
-              <Button
-                variant={tagFilterMode === 'any' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => {
-                  setTagFilterMode('any');
-                  if (selectedTags.length > 0) {
-                    window.dispatchEvent(new CustomEvent('tagsSelected', { 
-                      detail: { tags: selectedTags, mode: 'any' } 
-                    }));
-                  }
-                }}
-                className="h-6 text-xs"
-              >
-                Any
-              </Button>
-              <Button
-                variant={tagFilterMode === 'all' ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => {
-                  setTagFilterMode('all');
-                  if (selectedTags.length > 0) {
-                    window.dispatchEvent(new CustomEvent('tagsSelected', { 
-                      detail: { tags: selectedTags, mode: 'all' } 
-                    }));
-                  }
-                }}
-                className="h-6 text-xs"
-              >
-                All
-              </Button>
-            </div>
-          )}
-          
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input 
-              placeholder="Search tags..." 
-              className="pl-9 h-9 text-sm" 
-              value={tagSearchQuery}
-              onChange={(e) => setTagSearchQuery(e.target.value)}
-            />
-          </div>
-
-          <div className="text-xs text-muted-foreground bg-primary/5 p-2 rounded border">
-            💡 <strong>Click</strong> to add/remove tags. <strong>Ctrl+Click</strong> to toggle.
-          </div>
-
-          {loadingTags ? (
-            <div className="flex items-center justify-center py-4">
-              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-            </div>
-          ) : displayedTags.length > 0 ? (
-            <div className="space-y-1">
-              {displayedTags.map((tag) => {
-                const isSelected = selectedTags.includes(tag.name);
-                return (
-                  <button
-                    key={tag.name}
-                    onClick={(e) => handleTagClick(tag.name, e)}
-                    className={cn(
-                      "w-full text-left px-3 py-2 rounded-lg text-sm transition-all flex items-center justify-between group",
-                      isSelected 
-                        ? "bg-primary/20 border-2 border-primary shadow-sm" 
-                        : "hover:bg-secondary/50 border-2 border-transparent"
-                    )}
+        ) : (
+          <>
+            {boardExams.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Board Exams
+                </p>
+                {boardExams.map((exam) => (
+                  <div
+                    key={exam}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-secondary/30 border pointer-events-none"
                   >
-                    <span className="flex items-center gap-2 flex-1">
-                      {isSelected ? (
-                        <CheckSquare className="h-4 w-4 text-primary flex-shrink-0" />
-                      ) : (
-                        <Square className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors flex-shrink-0" />
-                      )}
-                      <span className={cn(
-                        "transition-colors truncate",
-                        isSelected ? "text-primary font-semibold" : "group-hover:text-primary"
-                      )}>
-                        #{tag.name}
-                      </span>
-                    </span>
-                    <Badge 
-                      variant={isSelected ? "default" : "secondary"} 
-                      className="text-xs flex-shrink-0"
-                    >
-                      {tag.count}
-                    </Badge>
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="text-center py-4 text-sm text-muted-foreground">
-              {tagSearchQuery ? `No tags found matching "${tagSearchQuery}"` : 'No tags available yet'}
-            </div>
-          )}
-
-          {/* Selected Tags Summary */}
-          {selectedTags.length > 0 && (
-            <div className="p-3 bg-primary/10 rounded-lg border border-primary/20">
-              <div className="text-xs font-medium mb-2">
-                Filtering by {selectedTags.length} tag{selectedTags.length !== 1 ? 's' : ''}:
-              </div>
-              <div className="flex flex-wrap gap-1">
-                {selectedTags.map(tag => (
-                  <Badge key={tag} variant="default" className="text-xs">
-                    #{tag}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeTag(tag);
-                      }}
-                      className="ml-1 hover:text-destructive transition-colors"
-                      aria-label={`Remove ${tag}`}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </Badge>
+                    <GraduationCap className="h-4 w-4 text-muted-foreground" />
+                    <span className="flex-1 truncate">{exam}</span>
+                  </div>
                 ))}
               </div>
-            </div>
-          )}
+            )}
+
+            {competitiveExams.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Competitive Exams
+                </p>
+                {competitiveExams.map((exam) => (
+                  <div
+                    key={exam}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-secondary/30 border pointer-events-none"
+                  >
+                    <BookOpen className="h-4 w-4 text-muted-foreground" />
+                    <span className="flex-1 truncate">{exam}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {profile?.state && unselectedExams.length > 0 && (
+              <Button 
+                variant="link" 
+                className="px-0 text-sm text-primary w-full justify-start hover:underline"
+                onClick={() => setIsAddExamsOpen(true)}
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                Add More Entrance Exams ({unselectedExams.length})
+              </Button>
+            )}
+
+            {profile?.state && unselectedExams.length === 0 && (
+              <div className="text-xs text-muted-foreground py-2 px-3 bg-green-50 dark:bg-green-950 rounded-lg border border-green-200 dark:border-green-800">
+                ✓ All available exams for {profile.state} are selected
+              </div>
+            )}
+
+            {!profile?.state && (
+              <div className="text-xs text-muted-foreground py-2">
+                Update your state in profile to see available exams
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-sm">Trending Tags</h3>
+          <div className="flex items-center gap-1">
+            {selectedTags.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearSelectedTags}
+                className="h-auto p-0 text-xs text-destructive hover:underline"
+              >
+                Clear ({selectedTags.length})
+              </Button>
+            )}
+            {tags.length > 6 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowAllTags(!showAllTags)}
+                className="h-auto p-0 text-xs text-primary hover:underline ml-2"
+              >
+                {showAllTags ? 'Show Less' : 'View All'}
+              </Button>
+            )}
+          </div>
         </div>
 
+        {/* Filter Mode Toggle */}
+        {selectedTags.length > 1 && (
+          <div className="flex items-center gap-2 p-2 bg-secondary/50 rounded-lg border">
+            <span className="text-xs text-muted-foreground">Match:</span>
+            <Button
+              variant={tagFilterMode === 'any' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => {
+                setTagFilterMode('any');
+                if (selectedTags.length > 0) {
+                  window.dispatchEvent(new CustomEvent('tagsSelected', { 
+                    detail: { tags: selectedTags, mode: 'any' } 
+                  }));
+                }
+              }}
+              className="h-6 text-xs"
+            >
+              Any
+            </Button>
+            <Button
+              variant={tagFilterMode === 'all' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => {
+                setTagFilterMode('all');
+                if (selectedTags.length > 0) {
+                  window.dispatchEvent(new CustomEvent('tagsSelected', { 
+                    detail: { tags: selectedTags, mode: 'all' } 
+                  }));
+                }
+              }}
+              className="h-6 text-xs"
+            >
+              All
+            </Button>
+          </div>
+        )}
+        
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none z-10" />
+          <Input 
+            ref={searchInputRef}
+            placeholder="Search tags..." 
+            className="pl-9 h-9 text-sm" 
+            value={tagSearchQuery}
+            onChange={(e) => setTagSearchQuery(e.target.value)}
+            onFocus={(e) => {
+              e.target.select();
+              e.stopPropagation();
+            }}
+            onClick={(e) => {
+              // Prevent clicks from propagating to parent elements
+              e.stopPropagation();
+            }}
+            onMouseDown={(e) => {
+              // Prevent losing focus when clicking inside input
+              e.stopPropagation();
+            }}
+            onKeyDown={(e) => {
+              // Prevent event bubbling on key presses
+              e.stopPropagation();
+            }}
+            autoComplete="off"
+            autoFocus={false}
+          />
+        </div>
+
+        <div className="text-xs text-muted-foreground bg-primary/5 p-2 rounded border">
+          💡 <strong>Click</strong> to add/remove tags. <strong>Ctrl+Click</strong> to toggle.
+        </div>
+
+        {loadingTags ? (
+          <div className="flex items-center justify-center py-4">
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          </div>
+        ) : displayedTags.length > 0 ? (
+          <div 
+            className="space-y-1 max-h-[300px] overflow-y-auto"
+            onMouseDown={(e) => {
+              // Prevent stealing focus from search input when it's focused
+              if (searchInputRef.current === document.activeElement) {
+                // Allow normal scrolling but prevent focus change
+                const target = e.target as HTMLElement;
+                if (target.tagName === 'BUTTON' || target.closest('button')) {
+                  e.preventDefault();
+                  // Keep focus on input
+                  setTimeout(() => {
+                    searchInputRef.current?.focus();
+                  }, 0);
+                }
+              }
+            }}
+          >
+            {displayedTags.map((tag) => {
+              const isSelected = selectedTags.includes(tag.name);
+              return (
+                <button
+                  key={tag.name}
+                  type="button"
+                  onClick={(e) => {
+                    // Don't process click if search input is focused
+                    if (searchInputRef.current === document.activeElement) {
+                      return;
+                    }
+                    // Only process click if not selecting text
+                    if (window.getSelection()?.toString().length === 0) {
+                      handleTagClick(tag.name, e);
+                    }
+                  }}
+                  onMouseDown={(e) => {
+                    // Don't process if search input is focused
+                    if (searchInputRef.current === document.activeElement) {
+                      return;
+                    }
+                    // Prevent default to avoid losing input focus when dragging text
+                    if (window.getSelection()?.toString().length > 0) {
+                      e.preventDefault();
+                    }
+                  }}
+                  className={cn(
+                    "w-full text-left px-3 py-2 rounded-lg text-sm transition-all flex items-center justify-between group select-none",
+                    isSelected 
+                      ? "bg-primary/20 border-2 border-primary shadow-sm" 
+                      : "hover:bg-secondary/50 border-2 border-transparent"
+                  )}
+                >
+                  <span className="flex items-center gap-2 flex-1">
+                    {isSelected ? (
+                      <CheckSquare className="h-4 w-4 text-primary flex-shrink-0" />
+                    ) : (
+                      <Square className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors flex-shrink-0" />
+                    )}
+                    <span className={cn(
+                      "transition-colors truncate",
+                      isSelected ? "text-primary font-semibold" : "group-hover:text-primary"
+                    )}>
+                      #{tag.name}
+                    </span>
+                  </span>
+                  <Badge 
+                    variant={isSelected ? "default" : "secondary"} 
+                    className="text-xs flex-shrink-0"
+                  >
+                    {tag.count}
+                  </Badge>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-center py-4 text-sm text-muted-foreground">
+            {tagSearchQuery ? `No tags found matching "${tagSearchQuery}"` : 'No tags available yet'}
+          </div>
+        )}
+
+        {/* Selected Tags Summary */}
+        {selectedTags.length > 0 && (
+          <div className="p-3 bg-primary/10 rounded-lg border border-primary/20">
+            <div className="text-xs font-medium mb-2">
+              Filtering by {selectedTags.length} tag{selectedTags.length !== 1 ? 's' : ''}:
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {selectedTags.map(tag => (
+                <Badge key={tag} variant="default" className="text-xs">
+                  #{tag}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeTag(tag);
+                    }}
+                    className="ml-1 hover:text-destructive transition-colors"
+                    aria-label={`Remove ${tag}`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </Badge>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {!isMobile && (
         <div className="bg-gradient-to-br from-secondary/50 to-primary/5 rounded-lg p-4 space-y-3 border">
           <h3 className="font-semibold text-sm">Need 1-1 Dedicated Counseling Expert</h3>
           <p className="text-xs text-muted-foreground">
@@ -543,7 +659,99 @@ export const DynamicSidebar = () => {
             Book Now
           </Button>
         </div>
-      </div>
+      )}
+    </div>
+  ), [
+    profile, 
+    location.pathname, 
+    interestedExams, 
+    boardExams, 
+    competitiveExams, 
+    unselectedExams, 
+    selectedTags, 
+    tagFilterMode, 
+    tags.length, 
+    showAllTags, 
+    loadingTags, 
+    filteredTags, 
+    displayedTags, 
+    tagSearchQuery,
+    handleTagClick,
+    clearSelectedTags,
+    removeTag,
+    setIsAddExamsOpen
+  ]);
+
+  const [isMobileSheetOpen, setIsMobileSheetOpen] = useState(false);
+
+  if (loading) {
+    return (
+      <>
+        {/* Desktop Loading */}
+        <aside className="hidden lg:block w-72 border-r bg-card h-[calc(100vh-4rem)] sticky top-16 overflow-y-auto">
+          <div className="p-4 space-y-6">
+            <Skeleton className="h-20 w-full" />
+            <Skeleton className="h-32 w-full" />
+            <Skeleton className="h-40 w-full" />
+          </div>
+        </aside>
+        
+        {/* Mobile Bottom Nav */}
+        {MobileBottomNav()}
+      </>
+    );
+  }
+
+  return (
+    <>
+      {/* Desktop Sidebar */}
+      <aside className="hidden lg:block w-72 border-r bg-card h-[calc(100vh-4rem)] sticky top-16 overflow-y-auto">
+        {SidebarContent({ isMobile: false })}
+      </aside>
+
+      {/* Mobile Bottom Navigation */}
+      {MobileBottomNav()}
+
+      {/* Mobile Sheet/Drawer for Full Sidebar */}
+      <Sheet open={isMobileSheetOpen} onOpenChange={setIsMobileSheetOpen}>
+        <SheetTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="lg:hidden fixed bottom-20 right-4 z-40 h-12 w-12 rounded-full bg-primary text-primary-foreground shadow-lg hover:bg-primary/90 hover:shadow-xl transition-all"
+            aria-label="Open menu"
+          >
+            <Menu className="h-6 w-6" />
+          </Button>
+        </SheetTrigger>
+        <SheetContent side="left" className="w-[85vw] sm:w-[400px] overflow-y-auto p-0">
+          <SheetHeader className="p-4 border-b">
+            <SheetTitle>Menu</SheetTitle>
+            <SheetDescription>
+              Navigate to sections and filter posts
+            </SheetDescription>
+          </SheetHeader>
+          <div className="p-4">
+            {SidebarContent({ isMobile: true })}
+            
+            {/* Mobile-specific CTA */}
+            <div className="bg-gradient-to-br from-secondary/50 to-primary/5 rounded-lg p-4 space-y-3 border mt-4">
+              <h3 className="font-semibold text-sm">Need 1-1 Dedicated Counseling Expert</h3>
+              <p className="text-xs text-muted-foreground">
+                Get personalized guidance from our expert counselors
+              </p>
+              <Button 
+                className="w-full bg-primary hover:bg-primary/90 shadow-md hover:shadow-lg transition-all"
+                onClick={() => {
+                  window.open('tel:+1234567890', '_self');
+                }}
+              >
+                Book Now
+              </Button>
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
       
       <AddExamsModal
         open={isAddExamsOpen}
@@ -552,6 +760,6 @@ export const DynamicSidebar = () => {
         currentExams={interestedExams}
         userState={profile?.state || ""}
       />
-    </aside>
+    </>
   );
 };

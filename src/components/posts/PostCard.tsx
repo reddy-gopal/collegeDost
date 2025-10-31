@@ -35,11 +35,13 @@ interface PostCardProps {
   title: string;
   content?: string;
   category?: string;
+  examType?: string;
   image?: string | boolean;
   likes?: number;
   dislikes?: number;
   comments?: number;
   views?: number;
+  tags?: string[];
 }
 
 export const PostCard = ({
@@ -52,11 +54,11 @@ export const PostCard = ({
   content,
   image,
   category,
-  likes = 0,
-  dislikes = 0,
+  examType,
   comments = 0,
   views = 0,
-  avatarUrl, // Add this prop
+  tags = [],
+  avatarUrl,
 }: PostCardProps & { avatarUrl?: string }) => {
   const { user } = useAuth();
   const { hasLiked, likesCount, toggleLike } = useLikes(id, user?.id);
@@ -143,10 +145,33 @@ export const PostCard = ({
           <h2 className="font-bold text-base md:text-lg hover:text-primary transition-colors leading-tight">
             {title}
           </h2>
-          {category && (
+          {examType && (
             <span className="inline-block px-3 py-1 bg-primary/10 text-primary border border-primary/20 rounded-full text-xs font-medium">
-              {category}
+              {examType}
             </span>
+          )}
+          {tags && tags.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {tags.slice(0, 5).map((tag, idx) => (
+                <span
+                  key={idx}
+                  className="px-2 py-0.5 text-xs bg-secondary rounded-full hover:bg-secondary/80 cursor-pointer transition-colors"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    window.dispatchEvent(new CustomEvent('tagsSelected', { 
+                      detail: { tags: [tag], mode: 'any' } 
+                    }));
+                  }}
+                >
+                  #{tag}
+                </span>
+              ))}
+              {tags.length > 5 && (
+                <span className="px-2 py-0.5 text-xs text-muted-foreground">
+                  +{tags.length - 5} more
+                </span>
+              )}
+            </div>
           )}
           {content && (
             <p className="text-sm text-muted-foreground line-clamp-2">{content}</p>
@@ -165,25 +190,31 @@ export const PostCard = ({
           )}
         </Link>
 
-          <div className="flex flex-wrap items-center gap-2 md:gap-4 mt-4 pt-4 border-t">
-            <Button 
-              variant="ghost" 
-              size="sm" 
-              className="gap-2 hover:bg-primary/10 transition-all"
-              onClick={handleLike}
-            >
-              <ThumbsUp className={`h-4 w-4 ${hasLiked ? 'fill-red-500 text-red-500' : 'text-muted-foreground'}`} />
-              <span className="hidden sm:inline">{likesCount}</span>
-            </Button>
-            <Button variant="ghost" size="sm" className="gap-2 hover:bg-secondary transition-all" asChild>
-              <Link to={`/post/${id}`}>
-                <MessageSquare className="h-4 w-4" />
-                <span className="hidden sm:inline">{comments}</span>
-              </Link>
-            </Button>
-            <Button variant="ghost" size="sm" className="hover:bg-secondary transition-all">
-              <Share2 className="h-4 w-4" />
-            </Button>
+          <div className="flex flex-wrap items-center justify-between gap-2 md:gap-4 mt-4 pt-4 border-t">
+            <div className="flex items-center gap-2 md:gap-4">
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                className="gap-1.5 hover:bg-primary/10 transition-all"
+                onClick={handleLike}
+              >
+                <ThumbsUp className={`h-4 w-4 ${hasLiked ? 'fill-red-500 text-red-500' : 'text-muted-foreground'}`} />
+                <span className="text-sm font-medium min-w-[1.5rem] text-left">{likesCount}</span>
+              </Button>
+              <Button variant="ghost" size="sm" className="gap-1.5 hover:bg-secondary transition-all" asChild>
+                <Link to={`/post/${id}`}>
+                  <MessageSquare className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium min-w-[1.5rem] text-left">{comments}</span>
+                </Link>
+              </Button>
+              <Button variant="ghost" size="sm" className="hover:bg-secondary transition-all">
+                <Share2 className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="flex items-center gap-1 text-sm text-muted-foreground">
+              <Eye className="h-4 w-4" />
+              <span className="font-medium">{views || 0}</span>
+            </div>
           </div>
         </div>
       </Card>

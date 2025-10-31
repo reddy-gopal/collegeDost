@@ -10,48 +10,70 @@ export function usePostView(postId: string | undefined) {
 
     const trackView = async () => {
       try {
-        // Get or create session ID for anonymous users
-        const sessionId = user?.id || getOrCreateSessionId();
-
-        // De-duplicate views within the last hour per user/session
-        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-        let query = (supabase as any)
-          .from('post_views')
-          .select('id')
-          .eq('post_id', postId)
-          .gte('viewed_at', oneHourAgo)
-          .limit(1);
-
-        if (user?.id) {
-          // For logged-in users, match user_id and ensure session_id is null
-          query = (query as any).eq('user_id', user.id).is('session_id', null);
-        } else {
-          // For anonymous, match session_id and ensure user_id is null
-          query = (query as any).is('user_id', null).eq('session_id', sessionId);
-        }
-
-        const { data: existingView } = await (query as any).maybeSingle();
-
-        if (existingView) {
-          // View already tracked
+        // Only track views for logged-in users for now
+        // Anonymous view tracking requires session_id column which may not be in schema cache yet
+        if (!user?.id) {
+          console.log('⚠️ View tracking skipped: User not logged in (session_id column may not be available in schema cache)');
           return;
         }
 
-        // Insert new view
-        const { error } = await (supabase as any)
+        console.log('👁️ Tracking view for post:', postId);
+        console.log('👤 User: logged in (', user.id, ')');
+
+        // De-duplicate views within the last hour per user
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+        
+        // Check for existing view (only check by user_id, skip session_id for now)
+        const { data: existingView, error: checkError } = await (supabase as any)
           .from('post_views')
-          .insert({
-            post_id: postId,
-            user_id: user?.id || null,
-            session_id: !user ? sessionId : null,
-            viewed_at: new Date().toISOString()
-          });
+          .select('id')
+          .eq('post_id', postId)
+          .eq('user_id', user.id)
+          .gte('viewed_at', oneHourAgo)
+          .limit(1)
+          .maybeSingle();
+
+        if (checkError) {
+          console.error('❌ Error checking existing view:', checkError);
+        }
+
+        if (existingView) {
+          // View already tracked
+          console.log('✅ View already tracked within last hour');
+          return;
+        }
+
+        // Prepare insert data - only include fields that definitely exist
+        const insertData: any = {
+          post_id: postId,
+          user_id: user.id,
+          viewed_at: new Date().toISOString()
+        };
+
+        // Only add session_id if we're sure the column exists (skip for now to avoid errors)
+        // The migration has session_id, but PostgREST cache may not be updated yet
+
+        console.log('📝 Inserting view:', insertData);
+
+        // Insert new view
+        const { data, error } = await (supabase as any)
+          .from('post_views')
+          .insert(insertData)
+          .select();
 
         if (error) {
-          console.error('Error tracking view:', error);
+          console.error('❌ Error tracking view:', error);
+          console.error('Error details:', {
+            message: error.message,
+            code: error.code,
+            details: error.details,
+            hint: error.hint
+          });
+        } else {
+          console.log('✅ View tracked successfully:', data);
         }
       } catch (error) {
-        console.error('Error in trackView:', error);
+        console.error('❌ Error in trackView:', error);
       }
     };
 

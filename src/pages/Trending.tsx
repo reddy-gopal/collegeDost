@@ -5,6 +5,24 @@ import { Loader2, TrendingUp } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { Card } from "@/components/ui/card";
 
+export interface TrendingPost {
+  id: string;
+  user_id: string;
+  title: string | null;
+  content: string | null;
+  image_url: string | null;
+  category: string | null;
+  exam_type?: string | null;
+  created_at: string;
+  comments_count: number;
+  views_count: number;
+  tags: string[];
+  profiles?: {
+    username: string;
+    avatar_url: string | null;
+  };
+}
+
 const Trending = () => {
   const { posts, loading } = useTrendingPosts(25); // Show top 25 posts
 
@@ -47,9 +65,11 @@ const Trending = () => {
                 title={post.title || post.content?.substring(0, 100) || 'Untitled'}
                 content={post.content || ''}
                 image={post.image_url}
-                category={post.category || 'General'}
+                category={post.category}
+                examType={(post as any).exam_type || ''}
                 comments={post.comments_count || 0}
                 views={post.views_count || 0}
+                tags={post.tags || []}
                 avatarUrl={post.profiles?.avatar_url}
               />
             ))}

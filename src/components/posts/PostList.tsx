@@ -38,9 +38,11 @@ export function PostList() {
           title={post.title || post.content?.substring(0, 100) || 'Untitled'}
           content={post.content || ''}
           image={post.image_url || ''}
-          category={post.category || 'General'}
+          category={post.category}
+          examType={post.exam_type || ''}
           comments={post.comments_count || 0}
-          views={0}
+          views={post.views_count || 0}
+          tags={post.tags || []}
           avatarUrl={post.profiles?.avatar_url}
         />
       ))}

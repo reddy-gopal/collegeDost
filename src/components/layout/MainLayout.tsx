@@ -19,7 +19,7 @@ export const MainLayout = ({ children }: MainLayoutProps) => {
         {/* Show DynamicSidebar if logged in, otherwise show Sidebar */}
         {user ? <DynamicSidebar /> : <Sidebar />}
         
-        <main className="flex-1 min-w-0 w-full">{children}</main>
+        <main className="flex-1 min-w-0 w-full pb-16 lg:pb-0">{children}</main>
         
         <TrendingSidebar />
       </div>

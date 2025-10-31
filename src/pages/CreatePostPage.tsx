@@ -356,33 +356,83 @@ export default function CreatePostPage() {
 
   // Process tags: upsert into tags table and link in post_tags
   const processPostTags = async (postId: string, hashtags: string[]) => {
+    if (!hashtags || hashtags.length === 0) return;
+    
     try {
-      for (const tagName of hashtags) {
-        // Upsert tag (insert or get existing)
-        const { data: tag, error: tagError } = await (supabase as any)
-          .from('tags')
-          .upsert({ name: tagName.toLowerCase() }, { onConflict: 'name' })
-          .select()
-          .single();
+      // Filter out empty or invalid tag names
+      const validTags = hashtags
+        .map(tag => tag.trim().toLowerCase())
+        .filter(tag => tag.length > 0 && tag.length <= 50); // Max tag length reasonable limit
 
-        if (tagError) {
-          console.error('Error upserting tag:', tagError);
-          continue;
-        }
+      if (validTags.length === 0) return;
 
-        // Link tag to post
-        if (tag) {
-          const { error: linkError } = await (supabase as any)
-            .from('post_tags')
-            .insert({ post_id: postId, tag_id: tag.id });
+      for (const tagName of validTags) {
+        try {
+          // Upsert tag (insert or get existing)
+          const { data: tag, error: tagError } = await (supabase as any)
+            .from('tags')
+            .upsert(
+              { name: tagName },
+              { 
+                onConflict: 'name',
+                ignoreDuplicates: false 
+              }
+            )
+            .select()
+            .single();
 
-          if (linkError && linkError.code !== '23505') { // Ignore duplicate errors
-            console.error('Error linking tag to post:', linkError);
+          let tagId: string | null = null;
+
+          if (tagError) {
+            console.error('Error upserting tag:', tagError);
+            // Try to fetch existing tag
+            const { data: existingTag, error: fetchError } = await (supabase as any)
+              .from('tags')
+              .select('id')
+              .eq('name', tagName)
+              .single();
+            
+            if (fetchError) {
+              console.error('Error fetching existing tag:', fetchError);
+              continue; // Skip this tag
+            }
+            
+            if (existingTag) {
+              tagId = existingTag.id;
+            } else {
+              continue; // Tag doesn't exist and couldn't be created
+            }
+          } else if (tag) {
+            tagId = tag.id;
           }
+
+          // Link tag to post
+          if (tagId) {
+            const { error: linkError } = await (supabase as any)
+              .from('post_tags')
+              .insert({ post_id: postId, tag_id: tagId })
+              .select();
+
+            if (linkError) {
+              // Check if it's just a duplicate error (unique constraint violation)
+              if (linkError.code === '23505' || linkError.message?.includes('duplicate')) {
+                // Tag already linked to post, that's fine
+                console.log(`Tag ${tagName} already linked to post`);
+              } else {
+                console.error('Error linking tag to post:', linkError);
+                // Continue processing other tags even if one fails
+              }
+            }
+          }
+        } catch (tagProcessingError) {
+          // Catch individual tag processing errors to continue with other tags
+          console.error(`Error processing tag ${tagName}:`, tagProcessingError);
+          continue;
         }
       }
     } catch (error) {
       console.error('Error processing tags:', error);
+      // Don't throw - tag processing errors shouldn't fail the entire post creation
     }
   };
 

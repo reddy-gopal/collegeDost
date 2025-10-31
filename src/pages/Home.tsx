@@ -14,23 +14,31 @@ import { supabase } from "@/integrations/supabase/client";
 
 const Home = () => {
   const [sortBy, setSortBy] = useState("best");
-  const { posts, loading } = usePosts();
   const { user } = useAuth();
   const [interestedExams, setInterestedExams] = useState<string[]>([]);
-  const [showAllPosts, setShowAllPosts] = useState(false);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [tagFilterMode, setTagFilterMode] = useState<'any' | 'all'>('any');
-  // Listen for multi-tag selection from sidebar
+
+  // Use tag filter in usePosts hook - use useMemo to prevent unnecessary re-renders
+  const tagFilter = useMemo(() => {
+    if (selectedTags.length > 0) {
+      return { tags: selectedTags, mode: tagFilterMode };
+    }
+    return undefined;
+  }, [selectedTags, tagFilterMode]);
+  
+  const { posts, loading } = usePosts(tagFilter);
+
+  // Listen for tag selection from sidebar
   useEffect(() => {
     const handleTagsSelected = (event: any) => {
       const tags = event.detail?.tags || [];
       const mode = event.detail?.mode || 'any';
+      
       setSelectedTags(tags);
       setTagFilterMode(mode);
-      if (tags.length > 0) {
-        setShowAllPosts(true); // show all posts but filtered by tags
-      }
     };
+
     window.addEventListener('tagsSelected', handleTagsSelected);
     return () => window.removeEventListener('tagsSelected', handleTagsSelected);
   }, []);
@@ -84,28 +92,45 @@ const Home = () => {
     }
   }, [user]);
 
-  // Filter logic: if tags selected, apply tag filter; else personalize by interested exams
+  // Filter posts by interested exams (only if no tag filter active)
   const filteredPosts = useMemo(() => {
+    let filtered: any[] = [];
+    let isFilterEmpty = false;
+    
+    // If tags are selected, posts are already filtered by usePosts hook
     if (selectedTags.length > 0) {
-      return posts.filter((post: any) => {
-        const postTags: string[] = (post.tags || []).map((t: string) => t.toLowerCase());
-        if (tagFilterMode === 'all') {
-          return selectedTags.every(t => postTags.includes(t.toLowerCase()));
+      filtered = posts;
+      // Mark if tag filter resulted in empty results
+      if (filtered.length === 0 && posts.length > 0) {
+        isFilterEmpty = true;
+      }
+    } else {
+      // Otherwise automatically filter by interested exams (no UI toggle)
+      if (!user || interestedExams.length === 0) {
+        filtered = posts;
+      } else {
+        filtered = posts.filter(post => {
+          const postExamType = (post as any).exam_type;
+          if (!postExamType) return false;
+          return interestedExams.some(exam => exam.toLowerCase() === postExamType.toLowerCase());
+        });
+        // Mark if filter resulted in empty results
+        if (filtered.length === 0 && posts.length > 0) {
+          isFilterEmpty = true;
         }
-        return selectedTags.some(t => postTags.includes(t.toLowerCase()));
-      });
+      }
     }
-
-    if (!user || interestedExams.length === 0 || showAllPosts) {
-      return posts;
+    
+    // If filtered posts length is zero, show all posts instead
+    if (filtered.length === 0 && posts.length > 0) {
+      return { posts: posts, isShowingAllDueToEmptyFilter: true };
     }
+    
+    return { posts: filtered, isShowingAllDueToEmptyFilter: isFilterEmpty };
+  }, [posts, selectedTags, user, interestedExams]);
 
-    return posts.filter(post => {
-      const postExamType = (post as any).exam_type;
-      if (!postExamType) return false;
-      return interestedExams.some(exam => exam.toLowerCase() === postExamType.toLowerCase());
-    });
-  }, [posts, selectedTags, tagFilterMode, user, interestedExams, showAllPosts]);
+  const actualFilteredPosts = useMemo(() => filteredPosts.posts, [filteredPosts]);
+  const isShowingAllDueToEmptyFilter = useMemo(() => filteredPosts.isShowingAllDueToEmptyFilter, [filteredPosts]);
 
   const sortPosts = (postsToSort: any[]) => {
     switch (sortBy) {
@@ -131,7 +156,7 @@ const Home = () => {
     }
   };
 
-  const sortedPosts = sortPosts(filteredPosts);
+  const sortedPosts = sortPosts(actualFilteredPosts);
 
   // Preload images for first 3 posts
   useEffect(() => {
@@ -175,8 +200,14 @@ const Home = () => {
         <div className="flex items-center justify-between mb-4 mt-6">
           <div className="flex items-center gap-2">
             <h2 className="text-xl font-semibold">
-              {selectedTags.length > 0 ? "Filtered by tags" : user && interestedExams.length > 0 && !showAllPosts
-                ? "Posts for You"
+              {selectedTags.length > 0 
+                ? isShowingAllDueToEmptyFilter
+                  ? "All Posts (no matches for selected tags)"
+                  : `Posts tagged: ${selectedTags.join(', ')}`
+                : user && interestedExams.length > 0
+                ? isShowingAllDueToEmptyFilter
+                  ? "All Posts (no matches for your exams)"
+                  : "Posts For You"
                 : "All Posts"}
             </h2>
           </div>
@@ -196,69 +227,74 @@ const Home = () => {
           </div>
         </div>
 
-        {/* Show filter info when user has interested exams */}
-        {user && interestedExams.length > 0 && (
-          <div className="mb-4 p-3 bg-primary/10 border border-primary/20 rounded-lg">
+        {/* Tag filter info */}
+        {selectedTags.length > 0 && (
+          <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
             <div className="flex items-center justify-between">
               <div className="flex-1">
                 <p className="text-sm font-medium mb-2">
-                  {showAllPosts 
-                    ? `Showing all posts (${posts.length} total)` 
-                    : `Showing posts filtered by your interested exams (${filteredPosts.length} posts)`}
+                  Showing posts matching {tagFilterMode === 'all' ? 'ALL' : 'ANY'} of these tags: ({actualFilteredPosts.length} posts)
                 </p>
-                {!showAllPosts && (
-                  <div className="flex flex-wrap gap-2">
-                    {interestedExams.slice(0, 5).map((exam) => (
-                      <Badge key={exam} variant="secondary" className="text-xs">
-                        {exam}
-                      </Badge>
-                    ))}
-                    {interestedExams.length > 5 && (
-                      <Badge variant="secondary" className="text-xs">
-                        +{interestedExams.length - 5} more
-                      </Badge>
-                    )}
-                  </div>
-                )}
+                <div className="flex flex-wrap gap-2">
+                  {selectedTags.map((tag) => (
+                    <Badge key={tag} variant="default" className="text-xs">
+                      #{tag}
+                    </Badge>
+                  ))}
+                </div>
               </div>
               <Button
-                variant={showAllPosts ? "default" : "outline"}
+                variant="outline"
                 size="sm"
-                onClick={() => setShowAllPosts(!showAllPosts)}
+                onClick={() => {
+                  setSelectedTags([]);
+                  window.dispatchEvent(new CustomEvent('tagsSelected', { 
+                    detail: { tags: [], mode: tagFilterMode } 
+                  }));
+                }}
                 className="ml-4"
               >
-                {showAllPosts ? "Show Filtered" : "Show All"}
+                Clear Tags
               </Button>
             </div>
           </div>
         )}
 
+
         <div className="space-y-4">
-          {sortedPosts.length === 0 ? (
+          {loading ? (
+            <div className="flex items-center justify-center min-h-[50vh]">
+              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            </div>
+          ) : sortedPosts.length === 0 ? (
             <div className="text-center py-12">
-              <p className="text-muted-foreground mb-4">
-                {user && interestedExams.length > 0 && !showAllPosts
-                  ? "No posts found for your interested exams. Try viewing all posts or update your interested exams in settings."
-                  : "No posts yet. Be the first to create one!"}
-              </p>
-              {user && interestedExams.length > 0 && !showAllPosts && (
+              <div className="mb-4">
+                <p className="text-2xl mb-2">🔍</p>
+                <p className="text-muted-foreground mb-4">
+                  {selectedTags.length > 0
+                    ? `No posts found with ${tagFilterMode === 'all' ? 'all' : 'any'} of the selected tags.`
+                    : user && interestedExams.length > 0
+                    ? "No posts found for your interested exams."
+                    : "No posts yet. Be the first to create one!"}
+                </p>
+              </div>
+              {selectedTags.length > 0 && (
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setShowAllPosts(true)}
+                  onClick={() => {
+                    setSelectedTags([]);
+                    window.dispatchEvent(new CustomEvent('tagsSelected', { 
+                      detail: { tags: [], mode: tagFilterMode } 
+                    }));
+                  }}
                 >
-                  View All Posts
+                  Clear Tag Filters
                 </Button>
               )}
             </div>
           ) : (
-            <>
-              {user && interestedExams.length > 0 && !showAllPosts && (
-                <div className="text-sm text-muted-foreground">
-                  Showing {sortedPosts.length} post{sortedPosts.length !== 1 ? 's' : ''} matching your interested exams
-                </div>
-              )}
-              {sortedPosts.map((post) => (
+            sortedPosts.map((post) => (
                 <PostCard 
                   key={post.id}
                   id={post.id}
@@ -268,13 +304,14 @@ const Home = () => {
                   title={post.title || post.content?.substring(0, 100) || 'Untitled'}
                   content={post.content || ''}
                   image={post.image_url || ''}
-                  category={post.category || 'General'}
+                  category={post.category}
+                  examType={post.exam_type || ''}
                   comments={post.comments_count || 0}
-                  views={0}
+                  views={post.views_count || 0}
+                  tags={post.tags || []}
                   avatarUrl={post.profiles?.avatar_url}
                 />
-              ))}
-            </>
+              ))
           )}
         </div>
       </div>

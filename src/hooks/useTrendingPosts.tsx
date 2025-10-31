@@ -65,26 +65,24 @@ export function useTrendingPosts(limit: number = 10) {
           });
         }
 
-        // Fetch view counts efficiently via RPC; fallback to direct query if RPC missing
+        // Fetch view counts efficiently via direct query
         let viewsMap: Record<string, number> = {};
         try {
-          const { data: rpcViews } = await (supabase as any).rpc('get_post_views_counts', { post_ids: postIds });
-          if (rpcViews) {
-            rpcViews.forEach((row: any) => {
-              viewsMap[row.post_id] = Number(row.views) || 0;
-            });
-          }
-        } catch {
           const { data: viewsData } = await (supabase as any)
             .from('post_views')
             .select('post_id')
             .in('post_id', postIds);
-          viewsMap = {};
-          if (viewsData) {
+          
+          if (viewsData && Array.isArray(viewsData)) {
             viewsData.forEach((view: any) => {
-              viewsMap[view.post_id] = (viewsMap[view.post_id] || 0) + 1;
+              if (view && view.post_id) {
+                viewsMap[view.post_id] = (viewsMap[view.post_id] || 0) + 1;
+              }
             });
           }
+        } catch (error) {
+          console.error('Error fetching view counts:', error);
+          // Continue with empty viewsMap
         }
 
         // Compute trending score with time decay if trend_score not present
