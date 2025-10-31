@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { createRealtimeChannel } from "@/lib/realtime";
 
 export interface Comment {
   id: string;
@@ -28,7 +29,7 @@ export function useComments(postId: string | null) {
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState<CommentSort>('best');
   const { toast } = useToast();
-  const channelRef = useRef<any>(null);
+  const channelRef = useRef<ReturnType<typeof createRealtimeChannel> | null>(null);
 
   // Recursively insert a reply under its parent
   // bumpCount: when true, increment parent.replies_count optimistically (client-only)
@@ -327,15 +328,15 @@ export function useComments(postId: string | null) {
   // Realtime subscription: listen to ALL INSERT/UPDATE/DELETE for comments
   useEffect(() => {
     if (!postId) return;
+    if (typeof window === "undefined") return; // SSR guard
 
-    const channel = supabase
-      .channel(`comments-post-${postId}`)
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "comments" },
-        async (payload) => {
-          const newCommentData = payload.new as any;
-          if (newCommentData.post_id !== postId) return;
+    const rt = createRealtimeChannel(`realtime:comments:${postId}`);
+    const filter = `post_id=eq.${postId}`;
+
+    rt.onPostgresChange(
+      { table: "comments", event: "INSERT", filter },
+      async (payload) => {
+        const newCommentData = payload.new as any;
 
           // Fetch profile for the new comment
           const { data: profileData } = await supabase
@@ -409,13 +410,12 @@ export function useComments(postId: string | null) {
             return sortCommentsRecursive(insertReply(prev, newComment, false), sortBy);
           });
         }
-      )
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "comments" },
-        (payload) => {
-          const updated = payload.new as any;
-          if (updated.post_id !== postId) return;
+    );
+
+    rt.onPostgresChange(
+      { table: "comments", event: "UPDATE", filter },
+      (payload) => {
+        const updated = payload.new as any;
 
           setComments(prev => {
             function updateInTree(list: Comment[]): Comment[] {
@@ -433,13 +433,12 @@ export function useComments(postId: string | null) {
             return sortCommentsRecursive(updateInTree(prev), sortBy);
           });
         }
-      )
-      .on(
-        "postgres_changes",
-        { event: "DELETE", schema: "public", table: "comments" },
-        (payload) => {
-          const deleted = payload.old as any;
-          if (deleted.post_id !== postId) return;
+    );
+
+    rt.onPostgresChange(
+      { table: "comments", event: "DELETE", filter },
+      (payload) => {
+        const deleted = payload.old as any;
 
           setComments(prev => {
             // Remove and decrement parent's replies_count if available
@@ -447,12 +446,17 @@ export function useComments(postId: string | null) {
             return updated;
           });
         }
-      )
-      .subscribe();
+    );
 
-    channelRef.current = channel;
+    rt.subscribe().catch((err: any) => {
+      console.error("Failed to subscribe to comments realtime:", err);
+    });
+
+    channelRef.current = rt;
     return () => {
-      if (channelRef.current) supabase.removeChannel(channelRef.current);
+      if (channelRef.current) {
+        channelRef.current.unsubscribe();
+      }
     };
   }, [postId, sortBy]);
 

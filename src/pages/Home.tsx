@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
+import { createRealtimeChannel } from "@/lib/realtime";
 
 const Home = () => {
   const [sortBy, setSortBy] = useState("best");
@@ -65,29 +66,28 @@ const Home = () => {
 
     fetchInterestedExams();
 
-    // Real-time subscription for profile updates
+    // Real-time subscription for profile updates using realtime helper
     if (user) {
-      const channel = supabase
-        .channel(`profile-exams-${user.id}`)
-        .on(
-          'postgres_changes',
-          {
-            event: 'UPDATE',
-            schema: 'public',
-            table: 'profiles',
-            filter: `id=eq.${user.id}`
-          },
-          (payload) => {
-            const updated = payload.new as any;
-            if (updated.interested_exams) {
-              setInterestedExams(updated.interested_exams);
-            }
+      if (typeof window === "undefined") return; // SSR guard
+
+      const rt = createRealtimeChannel(`realtime:profile:${user.id}`);
+
+      rt.onPostgresChange(
+        { table: "profiles", event: "UPDATE", filter: `id=eq.${user.id}` },
+        (payload) => {
+          const updated = payload.new as any;
+          if (updated.interested_exams) {
+            setInterestedExams(updated.interested_exams);
           }
-        )
-        .subscribe();
+        }
+      );
+
+      rt.subscribe().catch((err: any) => {
+        console.error("Failed to subscribe to profile realtime:", err);
+      });
 
       return () => {
-        supabase.removeChannel(channel);
+        rt.unsubscribe();
       };
     }
   }, [user]);

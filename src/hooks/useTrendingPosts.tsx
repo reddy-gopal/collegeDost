@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { createRealtimeChannel } from "@/lib/realtime";
 
 export interface TrendingPost {
   id: string;
@@ -25,7 +26,7 @@ export function useTrendingPosts(limit: number = 10) {
   const [posts, setPosts] = useState<TrendingPost[]>([]);
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
-  const channelRef = useRef<any>(null);
+  const channelRef = useRef<ReturnType<typeof createRealtimeChannel> | null>(null);
 
   const fetchTrendingPosts = async () => {
     try {
@@ -142,41 +143,37 @@ export function useTrendingPosts(limit: number = 10) {
   useEffect(() => {
     fetchTrendingPosts();
 
-    // Real-time subscription for posts table changes
-    const channel = supabase
-      .channel('trending-posts-realtime')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'posts'
-        },
-        (payload) => {
-          console.log('Post change detected:', payload);
-          // Refetch when any post changes (likes, comments, etc.)
-          fetchTrendingPosts();
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'post_views'
-        },
-        () => {
-          // Refetch when views are added
-          fetchTrendingPosts();
-        }
-      )
-      .subscribe();
+    if (typeof window === "undefined") return; // SSR guard
 
-    channelRef.current = channel;
+    // Real-time subscription with debouncing
+    let debounceTimer: NodeJS.Timeout | null = null;
+    const debouncedRefetch = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        fetchTrendingPosts();
+      }, 300);
+    };
+
+    const rt = createRealtimeChannel("realtime:trending");
+    
+    rt.onPostgresChange({ table: "posts", event: "*" }, () => {
+      debouncedRefetch();
+    });
+    
+    rt.onPostgresChange({ table: "post_views", event: "INSERT" }, () => {
+      debouncedRefetch();
+    });
+
+    rt.subscribe().catch((err: any) => {
+      console.error("Failed to subscribe to trending realtime:", err);
+    });
+
+    channelRef.current = rt;
 
     return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
       if (channelRef.current) {
-        supabase.removeChannel(channelRef.current);
+        channelRef.current.unsubscribe();
       }
     };
   }, [limit]);

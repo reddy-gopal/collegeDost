@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { createRealtimeChannel } from "@/lib/realtime";
 
 export function useLikes(postId: string, userId: string | undefined) {
   const [hasLiked, setHasLiked] = useState(false);
@@ -110,52 +111,40 @@ export function useLikes(postId: string, userId: string | undefined) {
     fetchLikesCount();
   }, [postId, userId, checkIfLiked, fetchLikesCount]);
 
-  // Set up real-time subscriptions for both likes table and posts table
+  // Set up real-time subscriptions using the new realtime helper
   useEffect(() => {
     if (!postId) return;
+    if (typeof window === "undefined") return; // SSR guard
 
-    // Subscribe to likes table changes (INSERT/DELETE)
-    const likesChannel = supabase
-      .channel(`likes-changes-${postId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'likes',
-          filter: `post_id=eq.${postId}`
-        },
-        () => {
-          // Immediately refresh count when likes change
-          console.log('🔄 Like change detected, refreshing count...');
-          fetchLikesCount();
-        }
-      )
-      .subscribe();
+    const rt = createRealtimeChannel(`realtime:likes:${postId}`);
+    const filter = `post_id=eq.${postId}`;
 
-    // Subscribe to posts table updates (for likes_count changes)
-    const postsChannel = supabase
-      .channel(`post-likes-${postId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'posts',
-          filter: `id=eq.${postId}`
-        },
-        (payload) => {
-          if (payload.new && (payload.new as any).likes_count !== undefined) {
-            console.log('📈 Posts table likes_count updated:', (payload.new as any).likes_count);
-            setLikesCount((payload.new as any).likes_count);
-          }
+    // Listen to likes table changes
+    rt.onPostgresChange(
+      { table: "likes", event: "*", filter },
+      () => {
+        console.log('🔄 Like change detected, refreshing count...');
+        fetchLikesCount();
+      }
+    );
+
+    // Listen to posts table updates for likes_count changes
+    rt.onPostgresChange(
+      { table: "posts", event: "UPDATE", filter: `id=eq.${postId}` },
+      (payload) => {
+        if (payload.new && (payload.new as any).likes_count !== undefined) {
+          console.log('📈 Posts table likes_count updated:', (payload.new as any).likes_count);
+          setLikesCount((payload.new as any).likes_count);
         }
-      )
-      .subscribe();
+      }
+    );
+
+    rt.subscribe().catch((err: any) => {
+      console.error("Failed to subscribe to likes realtime:", err);
+    });
 
     return () => {
-      supabase.removeChannel(likesChannel);
-      supabase.removeChannel(postsChannel);
+      rt.unsubscribe();
     };
   }, [postId, fetchLikesCount]);
 

@@ -1,12 +1,13 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { supabase } from '../integrations/supabase/client';
 import { useToast } from '../hooks/use-toast';
+import { createRealtimeChannel } from "@/lib/realtime";
 
 export function usePosts(tagFilter?: { tags: string[]; mode: 'any' | 'all' }) {
   const [posts, setPosts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
-  const channelRef = useRef<any>(null);
+  const channelRef = useRef<ReturnType<typeof createRealtimeChannel> | null>(null);
 
   const fetchPosts = useCallback(async () => {
     try {
@@ -14,16 +15,13 @@ export function usePosts(tagFilter?: { tags: string[]; mode: 'any' | 'all' }) {
 
       let postsData;
 
-      // If tag filter is provided, use RPC function
       if (tagFilter && tagFilter.tags && tagFilter.tags.length > 0) {
-        // Normalize tag names (trim and lowercase)
         const normalizedTags = tagFilter.tags
           .map(tag => tag.trim().toLowerCase())
           .filter(tag => tag.length > 0);
 
 
         if (normalizedTags.length === 0) {
-          // Invalid tag filter, fetch all posts instead
           const { data, error: postsError } = await supabase
             .from('posts')
             .select('*')
@@ -213,57 +211,38 @@ export function usePosts(tagFilter?: { tags: string[]; mode: 'any' | 'all' }) {
     }
   }, []);
 
-  // Set up real-time subscriptions
+  // Set up real-time subscriptions using the new realtime helper
   useEffect(() => {
     if (loading) return;
+    if (typeof window === "undefined") return; // SSR guard
 
-    // Subscribe to posts and post_tags table changes
-    const channel = supabase
-      .channel('posts-changes')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'posts'
-        },
-        () => {
-          fetchPosts();
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'post_tags'
-        },
-        () => {
-          fetchPosts();
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'post_views'
-        },
-        (payload: any) => {
-          // When a new view is inserted, update the view count for that specific post
-          const postId = payload.new?.post_id;
-          if (postId) {
-            updatePostViewCount(postId);
-          }
-        }
-      )
-      .subscribe();
+    // Use the new realtime helper
+    const rt = createRealtimeChannel("realtime:posts_bundle");
 
-    channelRef.current = channel;
+    rt.onPostgresChange({ table: "posts", event: "*" }, () => {
+      fetchPosts();
+    });
+    
+    rt.onPostgresChange({ table: "post_tags", event: "*" }, () => {
+      fetchPosts();
+    });
+    
+    rt.onPostgresChange({ table: "post_views", event: "INSERT" }, (payload: any) => {
+      const postId = payload.new?.post_id;
+      if (postId) {
+        updatePostViewCount(postId);
+      }
+    });
+
+    rt.subscribe().catch((err: any) => {
+      console.error("Failed to subscribe to posts realtime:", err);
+    });
+
+    channelRef.current = rt;
 
     return () => {
-      if (channelRef.current) {
-        supabase.removeChannel(channelRef.current);
+      if (channelRef.current && typeof channelRef.current.unsubscribe === "function") {
+        channelRef.current.unsubscribe();
       }
     };
   }, [loading, fetchPosts, updatePostViewCount]);

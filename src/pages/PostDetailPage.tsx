@@ -13,6 +13,7 @@ import { CommentSection } from "@/components/posts/CommentSection";
 import { formatDistanceToNow } from "date-fns";
 import { motion } from "framer-motion";
 import { usePostView } from "@/hooks/usePostView";
+import { createRealtimeChannel } from "@/lib/realtime";
 
 export default function PostDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -73,29 +74,83 @@ export default function PostDetailPage() {
     };
 
     fetchPost();
+  }, [id]);
 
-    // Real-time subscription for post updates
-    if (id) {
-      const channel = supabase
-        .channel(`post-detail-${id}`)
-        .on(
-          "postgres_changes",
-          {
-            event: "UPDATE",
-            schema: "public",
-            table: "posts",
-            filter: `id=eq.${id}`,
-          },
-          (payload) => {
-            setPost((prev: any) => (prev ? { ...prev, ...payload.new } : payload.new));
-          }
-        )
-        .subscribe();
+  // Scoped realtime subscriptions for post detail page
+  useEffect(() => {
+    if (!id) return;
+    if (typeof window === "undefined") return; // SSR guard
 
-      return () => {
-        supabase.removeChannel(channel);
-      };
-    }
+    const refetchPost = async () => {
+      try {
+        const { data: postData, error: fetchError } = await supabase
+          .from("posts")
+          .select("*")
+          .eq("id", id)
+          .single();
+
+        if (!fetchError && postData) {
+          // Fetch profile
+          const { data: profileData } = await supabase
+            .from("profiles")
+            .select("id, username, avatar_url")
+            .eq("id", postData.user_id)
+            .single();
+
+          // Fetch tags
+          const { data: postTagsData } = await (supabase as any)
+            .from('post_tags')
+            .select('tag_id, tags(name)')
+            .eq('post_id', id);
+
+          const tags = postTagsData?.map((pt: any) => pt.tags?.name).filter(Boolean) || [];
+
+          setPost({
+            ...postData,
+            profiles: profileData,
+            tags: tags
+          });
+        }
+      } catch (err) {
+        console.error("Error refetching post:", err);
+      }
+    };
+
+    const rt = createRealtimeChannel(`realtime:post-detail:${id}`);
+
+    // Listen to post updates
+    rt.onPostgresChange(
+      { table: "posts", event: "UPDATE", filter: `id=eq.${id}` },
+      () => {
+        refetchPost();
+      }
+    );
+
+    // Listen to likes changes (for immediate UI updates)
+    rt.onPostgresChange(
+      { table: "likes", event: "*", filter: `post_id=eq.${id}` },
+      () => {
+        // Likes hook will handle the actual count update
+        // This subscription ensures immediate visibility
+      }
+    );
+
+    // Listen to comments changes (for immediate UI updates)
+    rt.onPostgresChange(
+      { table: "comments", event: "*", filter: `post_id=eq.${id}` },
+      () => {
+        // Comments hook will handle the actual updates
+        // This subscription ensures immediate visibility
+      }
+    );
+
+    rt.subscribe().catch((err: any) => {
+      console.error("Failed to subscribe to post detail realtime:", err);
+    });
+
+    return () => {
+      rt.unsubscribe();
+    };
   }, [id]);
 
   if (loading) {

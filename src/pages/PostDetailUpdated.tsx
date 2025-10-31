@@ -10,6 +10,7 @@ import { useLikes } from "@/hooks/useLikes";
 import { supabase } from "@/integrations/supabase/client";
 import { CommentSection } from "@/components/posts/CommentSection";
 import { formatDistanceToNow } from "date-fns";
+import { createRealtimeChannel } from "@/lib/realtime";
 
 const PostDetailUpdated = () => {
   const { id } = useParams();
@@ -45,6 +46,68 @@ const PostDetailUpdated = () => {
     };
 
     fetchPost();
+  }, [id]);
+
+  // Scoped realtime subscriptions for post detail page
+  useEffect(() => {
+    if (!id) return;
+    if (typeof window === "undefined") return; // SSR guard
+
+    const refetchPost = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('posts')
+          .select(`
+            *,
+            profiles:user_id (
+              username,
+              avatar_url
+            )
+          `)
+          .eq('id', id)
+          .single();
+
+        if (!error && data) {
+          setPost(data);
+        }
+      } catch (err) {
+        console.error("Error refetching post:", err);
+      }
+    };
+
+    const rt = createRealtimeChannel(`realtime:post-detail:${id}`);
+
+    // Listen to post updates
+    rt.onPostgresChange(
+      { table: "posts", event: "UPDATE", filter: `id=eq.${id}` },
+      () => {
+        refetchPost();
+      }
+    );
+
+    // Listen to likes changes
+    rt.onPostgresChange(
+      { table: "likes", event: "*", filter: `post_id=eq.${id}` },
+      () => {
+        // Likes hook will handle the actual count update
+      }
+    );
+
+    // Listen to comments changes
+    rt.onPostgresChange(
+      { table: "comments", event: "*", filter: `post_id=eq.${id}` },
+      () => {
+        // Comments hook will handle the actual updates
+      }
+    );
+
+    rt.subscribe().catch((err: any) => {
+      console.error("Failed to subscribe to post detail realtime:", err);
+    });
+
+    return () => {
+      rt.unsubscribe();
+    };
   }, [id]);
 
   if (loading) {

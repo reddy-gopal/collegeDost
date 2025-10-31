@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { useEffect, useState, useMemo, useRef, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { createRealtimeChannel } from "@/lib/realtime";
 import { getExamsForUser, EXAM_TYPES } from "@/utils/examMappings";
 import { AddExamsModal } from "@/components/profile/AddExamsModal";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -126,63 +127,61 @@ export const DynamicSidebar = () => {
   }, [user, fetchProfile, fetchTags]);
 
 
-  // Set up real-time subscription for profile updates
+  // Set up real-time subscription for profile updates using realtime helper
   useEffect(() => {
     if (!user?.id) return;
+    if (typeof window === "undefined") return; // SSR guard
 
-    const channel = supabase
-      .channel(`profile-updates-${user.id}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'profiles',
-          filter: `id=eq.${user.id}`
-        },
-        (payload) => {
-          const updatedData = payload.new as any;
+    const rt = createRealtimeChannel(`realtime:profile:${user.id}`);
+
+    rt.onPostgresChange(
+      { table: "profiles", event: "UPDATE", filter: `id=eq.${user.id}` },
+      (payload) => {
+        const updatedData = payload.new as any;
+        
+        // Only update if data actually changed to prevent unnecessary re-renders
+        setProfile(prev => {
+          if (!prev) return updatedData;
+          // Deep compare to avoid unnecessary updates
+          const hasChanges = 
+            prev.username !== updatedData.username ||
+            prev.state !== updatedData.state ||
+            JSON.stringify(prev.interested_exams) !== JSON.stringify(updatedData.interested_exams) ||
+            JSON.stringify(prev.entrance_exam) !== JSON.stringify(updatedData.entrance_exam);
           
-          // Only update if data actually changed to prevent unnecessary re-renders
-          setProfile(prev => {
-            if (!prev) return updatedData;
-            // Deep compare to avoid unnecessary updates
-            const hasChanges = 
-              prev.username !== updatedData.username ||
-              prev.state !== updatedData.state ||
-              JSON.stringify(prev.interested_exams) !== JSON.stringify(updatedData.interested_exams) ||
-              JSON.stringify(prev.entrance_exam) !== JSON.stringify(updatedData.entrance_exam);
-            
-            if (!hasChanges) return prev;
-            return { ...prev, ...updatedData };
+          if (!hasChanges) return prev;
+          return { ...prev, ...updatedData };
+        });
+
+        if (updatedData.interested_exams) {
+          setInterestedExams(prev => {
+            // Only update if different
+            if (JSON.stringify(prev) === JSON.stringify(updatedData.interested_exams)) {
+              return prev;
+            }
+            return updatedData.interested_exams;
           });
-
-          if (updatedData.interested_exams) {
-            setInterestedExams(prev => {
-              // Only update if different
-              if (JSON.stringify(prev) === JSON.stringify(updatedData.interested_exams)) {
-                return prev;
-              }
-              return updatedData.interested_exams;
-            });
-          }
-          
-          if (updatedData.state) {
-            setAvailableExams(prev => {
-              const allPossibleExams = getExamsForUser(updatedData.state, EXAM_TYPES);
-              // Only update if different
-              if (JSON.stringify(prev) === JSON.stringify(allPossibleExams)) {
-                return prev;
-              }
-              return allPossibleExams;
-            });
-          }
         }
-      )
-      .subscribe();
+        
+        if (updatedData.state) {
+          setAvailableExams(prev => {
+            const allPossibleExams = getExamsForUser(updatedData.state, EXAM_TYPES);
+            // Only update if different
+            if (JSON.stringify(prev) === JSON.stringify(allPossibleExams)) {
+              return prev;
+            }
+            return allPossibleExams;
+          });
+        }
+      }
+    );
+
+    rt.subscribe().catch((err: any) => {
+      console.error("Failed to subscribe to profile realtime:", err);
+    });
 
     return () => {
-      supabase.removeChannel(channel);
+      rt.unsubscribe();
     };
   }, [user?.id]);
 
