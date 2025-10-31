@@ -177,11 +177,11 @@ export const PostCard = ({
             <p className="text-sm text-muted-foreground line-clamp-2">{content}</p>
           )}
           {typeof image === "string" && image && (
-            <div className="relative w-full h-64 bg-muted">
+            <div className="relative w-full bg-muted">
               <img
                 src={image}
                 alt="Post image"
-                className="w-full h-full object-cover"
+                className="max-w-full h-auto"
                 loading="eager"
                 fetchPriority="high"
                 decoding="async"
